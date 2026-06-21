@@ -175,6 +175,28 @@ python main.py
 | `/ajuda` | Lista de comandos |
 | `/sair` | Encerrar |
 
+## Ferramentas de Sistema (Nível 1)
+
+Além de cálculo e data/hora, o agente agora suporta ações locais no projeto:
+
+- `listar pasta <caminho>`
+- `ler arquivo <caminho>`
+- `criar arquivo <caminho> ::: <conteudo>`
+- `executar comando <comando>`
+
+Exemplos:
+
+```text
+listar pasta src/
+ler arquivo README.md
+criar arquivo notas/planejamento.md ::: objetivo: melhorar RAG
+executar comando ls -la src
+```
+
+Observações:
+- As operações de arquivo ficam restritas à pasta do projeto.
+- Comandos potencialmente destrutivos são bloqueados por segurança.
+
 ## Consumo de RAM por Cenário
 
 ### Perfil ultra-leve (LFM2.5)
@@ -241,9 +263,17 @@ AGENTES["devops"] = {
 
 ```python
 # src/core/config.py
-CHROMADB_THRESHOLD = 0.8    # Mais exigente na similaridade
-CHROMADB_TOP_K = 5          # Mais docs no RAG
+CHROMADB_THRESHOLD = 0.62       # Filtro semântico inicial (recall)
+CHROMADB_NIVEL1_THRESHOLD = 0.86 # Confiança para resposta direta no Nível 1
+CHROMADB_TOP_K = 6               # Candidatos para re-ranking híbrido
+RAG_MAX_DOCS = 4                 # Quantos docs entram no prompt final
+RAG_MAX_CHARS = 2200             # Tamanho máximo de contexto RAG
 ```
+
+Com isso, o fluxo fica mais preciso em hardware limitado:
+- Busca semântica ampla (top_k maior) para não perder contexto.
+- Re-ranking híbrido (semântico + lexical) para reduzir falso positivo.
+- Contexto RAG compacto para evitar "diluição" da resposta em modelo pequeno.
 
 ### Criar perfil customizado
 

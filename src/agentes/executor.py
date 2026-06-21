@@ -11,7 +11,13 @@ import time
 from rich.console import Console
 from rich.panel import Panel
 
-from src.core.config import AGENTES, NIVEIS
+from src.core.config import (
+    AGENTES,
+    NIVEIS,
+    CHROMADB_NIVEL1_THRESHOLD,
+    RAG_MAX_CHARS,
+    RAG_MAX_DOCS,
+)
 from src.core.classificador import classificar_complexidade, explicar_nivel
 from src.core.llm import chamar_llm, resumir_conversa
 from src.memoria.cache import Cache
@@ -75,10 +81,10 @@ class SistemaAgentes:
         docs_similares = self.semantica.buscar_similar(pergunta)
         if docs_similares and nivel == 1:
             melhor = docs_similares[0]
-            if melhor["similaridade"] >= 0.85:
+            if melhor.get("score_hibrido", melhor["similaridade"]) >= CHROMADB_NIVEL1_THRESHOLD:
                 resposta = melhor["conteudo"].split("Resposta: ", 1)[-1]
                 console.print(
-                    f"[dim]🧲 Nível 1 • ChromaDB ({melhor['similaridade']:.0%})[/dim]"
+                    f"[dim]🧲 Nível 1 • ChromaDB ({melhor.get('score_hibrido', melhor['similaridade']):.0%})[/dim]"
                 )
                 console.print(resposta, style="green")
                 self._salvar_metrica(nome_agente, 1, inicio, fonte="chromadb")
@@ -117,7 +123,11 @@ class SistemaAgentes:
                 tokens_out=resultado["tokens_saida"],
                 fonte="llm_rapido",
             )
-            return resultado["resposta"]
+            if self._deve_promover_para_profundo(pergunta, resultado["resposta"]):
+                console.print("[dim]↑ Ajuste de precisão: promovido para Nível 3[/dim]")
+                nivel = 3
+            else:
+                return resultado["resposta"]
 
         # ═══════════════════════════════════════════
         # NÍVEL 3: PROFUNDO (modelo 4B + RAG)
@@ -131,11 +141,9 @@ class SistemaAgentes:
         # RAG: enriquecer com ChromaDB
         contexto_rag = ""
         if docs_similares:
-            console.print(f"[dim]🧲 RAG: {len(docs_similares)} docs do ChromaDB[/dim]")
-            contexto_rag = "\n\n".join(
-                f"[Contexto relevante ({d['similaridade']:.0%})]\n{d['conteudo']}"
-                for d in docs_similares
-            )
+            docs_rag = docs_similares[:RAG_MAX_DOCS]
+            console.print(f"[dim]🧲 RAG: {len(docs_rag)} docs do ChromaDB[/dim]")
+            contexto_rag = self._construir_contexto_rag(docs_rag)
 
         mensagens = self._montar_contexto(
             n_msgs=5,
@@ -146,7 +154,7 @@ class SistemaAgentes:
 
         resultado = chamar_llm(
             modelo=agente["modelo_profundo"],
-            system_prompt=agente["system_prompt"],
+            system_prompt=self._system_prompt_com_rag(agente["system_prompt"], bool(contexto_rag)),
             mensagens=mensagens,
             stream=True,
             max_tokens=2048,
@@ -166,6 +174,64 @@ class SistemaAgentes:
             self._gerar_resumo(agente["modelo_rapido"])
 
         return resultado["resposta"]
+
+    def _system_prompt_com_rag(self, base_prompt: str, tem_rag: bool) -> str:
+        """Aplica instruções de grounding quando houver contexto recuperado."""
+        if not tem_rag:
+            return base_prompt
+        complemento = (
+            "\n\nUse primeiro o contexto recuperado para responder com precisão. "
+            "Se o contexto for insuficiente, sinalize explicitamente o que falta em vez de inventar fatos. "
+            "Quando possível, cite trechos do contexto recuperado."
+        )
+        return f"{base_prompt}{complemento}"
+
+    def _construir_contexto_rag(self, docs: list[dict]) -> str:
+        """Compacta o contexto RAG para reduzir ruído sem perder cobertura."""
+        blocos: list[str] = []
+        total_chars = 0
+        for idx, doc in enumerate(docs, 1):
+            score = doc.get("score_hibrido", doc.get("similaridade", 0.0))
+            conteudo = doc.get("conteudo", "").strip()
+            if not conteudo:
+                continue
+
+            # Mantém o contexto dentro de um limite para proteger qualidade no modelo menor.
+            trecho = conteudo[:900]
+            bloco = f"[Doc {idx} | Score {score:.0%}]\n{trecho}"
+
+            if total_chars + len(bloco) > RAG_MAX_CHARS:
+                break
+
+            blocos.append(bloco)
+            total_chars += len(bloco)
+
+        return "\n\n".join(blocos)
+
+    @staticmethod
+    def _deve_promover_para_profundo(pergunta: str, resposta: str) -> bool:
+        """Promove para nível profundo quando a saída rápida é fraca para a pergunta."""
+        if not resposta:
+            return True
+
+        resposta_lower = resposta.lower().strip()
+        pergunta_tokens = len(pergunta.split())
+
+        sinais_incerteza = [
+            "não sei",
+            "não tenho informação",
+            "não encontrei",
+            "não posso afirmar",
+            "talvez",
+            "depende",
+        ]
+        if any(s in resposta_lower for s in sinais_incerteza):
+            return True
+
+        if pergunta_tokens >= 14 and len(resposta_lower) < 120:
+            return True
+
+        return False
 
     def _montar_contexto(
         self, n_msgs: int, contexto_busca: str, pergunta: str, contexto_rag: str = ""

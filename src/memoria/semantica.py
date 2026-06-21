@@ -4,6 +4,7 @@ Busca por similaridade vetorial usando embeddings locais.
 """
 
 import hashlib
+import re
 from datetime import datetime
 
 import chromadb
@@ -46,6 +47,22 @@ class MemoriaSemantica:
         response = ollama_client.embeddings(model=EMBEDDING_MODEL, prompt=texto)
         return response["embedding"]
 
+    @staticmethod
+    def _tokenizar(texto: str) -> set[str]:
+        return set(re.findall(r"[a-zA-Z0-9_\-]{2,}", texto.lower()))
+
+    def _score_lexical(self, pergunta: str, documento: str) -> float:
+        """Jaccard simples para re-ranking híbrido com baixo custo."""
+        q = self._tokenizar(pergunta)
+        d = self._tokenizar(documento)
+        if not q or not d:
+            return 0.0
+        intersecao = len(q & d)
+        uniao = len(q | d)
+        if uniao == 0:
+            return 0.0
+        return intersecao / uniao
+
     def buscar_similar(self, pergunta: str, top_k: int = CHROMADB_TOP_K) -> list[dict]:
         """
         Busca documentos similares.
@@ -71,11 +88,18 @@ class MemoriaSemantica:
                 similaridade = 1 - (distancia / 2)
 
                 if similaridade >= CHROMADB_THRESHOLD:
+                    score_lexical = self._score_lexical(pergunta, doc)
+                    # Híbrido leve: semântico dominante + ajuste lexical.
+                    score_hibrido = (similaridade * 0.82) + (score_lexical * 0.18)
                     documentos.append({
                         "conteudo": doc,
                         "similaridade": similaridade,
+                        "score_lexical": score_lexical,
+                        "score_hibrido": score_hibrido,
                         "metadata": results["metadatas"][0][i],
                     })
+
+            documentos.sort(key=lambda d: d.get("score_hibrido", d["similaridade"]), reverse=True)
 
             return documentos
 

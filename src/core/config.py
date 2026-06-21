@@ -155,8 +155,11 @@ MEMORIA_ARQUIVO = str(DATA_DIR / "memoria.db")
 # ChromaDB - Memória Semântica
 CHROMADB_DIR = str(DATA_DIR / "chromadb")
 CHROMADB_COLLECTION = "conversas"
-CHROMADB_TOP_K = 3
-CHROMADB_THRESHOLD = 0.7
+CHROMADB_TOP_K = 6
+CHROMADB_THRESHOLD = 0.62
+CHROMADB_NIVEL1_THRESHOLD = 0.86
+RAG_MAX_DOCS = 4
+RAG_MAX_CHARS = 2200
 EMBEDDING_MODEL = MODELOS["embedding"]
 
 # ══════════════════════════════════════════════════════════════
