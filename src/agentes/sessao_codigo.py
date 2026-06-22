@@ -466,7 +466,7 @@ Máx 8 steps. Ordene por dependência."""
 # ══════════════════════════════════════════════════════════════
 
 _PROMPT_CODER = """Você é um programador expert. Gere APENAS código do arquivo pedido.
-REGRAS: código completo, imports inclusos, sem explicações, decisões simples."""
+REGRAS: código completo, imports inclusos, sem explicações, decisões simples, exemplo de uso, arquivo .md explicativo e caso o usuario não defina a stack, utilize Python."""
 
 _PROMPT_VALIDAR = """O código atende ao objetivo? JSON: {"valido":true/false,"problemas":[],"decisoes":[]}"""
 
