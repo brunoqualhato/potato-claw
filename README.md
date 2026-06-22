@@ -1,289 +1,319 @@
-# 🤖 Sistema Multiagente Local — 3 Níveis de Performance
+# 🧠 Neuron
 
-Sistema multiagente otimizado para **Mac M1 com 8GB RAM**.  
-Python puro + ChromaDB para memória semântica.  
-Suporte a **3 perfis de modelos**: ultra-leve (LFM2.5), equilibrado e máximo.
+Sistema multiagente local em Python com execução em **3 níveis de performance**, memória persistente e pesquisa web com grounding.
+Ele foi pensado para rodar com **Ollama local** em máquinas modestas, incluindo **Mac M1 com 8 GB de RAM**, priorizando respostas baratas quando possível e promovendo para pipelines mais profundos apenas quando necessário.
 
-## Estrutura do Projeto
+## O que o projeto faz
 
-```
-multi-agent/
-├── main.py                    # Ponto de entrada (CLI)
-├── requirements.txt           # Dependências
-├── README.md
-│
-├── src/                       # Código fonte
-│   ├── __init__.py
-│   │
-│   ├── core/                  # Núcleo do sistema
-│   │   ├── __init__.py
-│   │   ├── config.py          # Configuração central (perfis, modelos, níveis, agentes)
-│   │   ├── llm.py             # Interface com Ollama
-│   │   └── classificador.py   # Decide nível de performance (1/2/3)
-│   │
-│   ├── agentes/               # Lógica dos agentes
-│   │   ├── __init__.py
-│   │   ├── coordenador.py     # Roteia pergunta → agente correto
-│   │   └── executor.py        # Motor de execução (pipeline 3 níveis)
-│   │
-│   ├── memoria/               # 3 camadas de memória
-│   │   ├── __init__.py
-│   │   ├── cache.py           # Camada 1: Cache exato (JSON)
-│   │   ├── semantica.py       # Camada 2: ChromaDB (similaridade vetorial)
-│   │   └── sqlite.py          # Camada 3: SQLite (histórico, resumos, métricas)
-│   │
-│   └── ferramentas/           # Ferramentas que rodam antes do LLM
-│       ├── __init__.py
-│       ├── resolver.py        # Cálculos, data/hora
-│       └── web.py             # Pesquisa DuckDuckGo
-│
-└── data/                      # Dados persistentes (auto-criado)
-    ├── cache.json             # Cache de respostas
-    ├── memoria.db             # SQLite
-    └── chromadb/              # Base vetorial
+O Neuron recebe uma pergunta, analisa a intenção com uma LLM coordenadora e decide entre:
+
+- responder com **ferramentas locais** sem chamar LLM;
+- usar um **modelo rápido** com contexto curto;
+- usar um **modelo profundo** com RAG local e/ou pesquisa web.
+
+Além do modo de chat, o projeto também inclui:
+
+- **CLI interativa e batch** (`main.py`);
+- **API HTTP com FastAPI** (`api.py`);
+- **memória em 3 camadas**: cache JSON, SQLite e ChromaDB;
+- **loop autônomo de geração de código** via `/projeto`;
+- **web RAG** com busca, fetch, limpeza de HTML e extração de fatos.
+
+## Arquitetura resumida
+
+```text
+Pergunta do usuário
+        │
+        ▼
+Analisador de intenção (src/core/analisador.py)
+        │
+        ├── ferramenta local → src/ferramentas/resolver.py
+        ├── nível 2 rápido   → modelo leve + contexto curto
+        └── nível 3 profundo → web RAG + ChromaDB + modelo profundo
 ```
 
-## Perfis de Modelos
+O pipeline principal vive em `src/agentes/executor.py` e orquestra:
 
-O sistema oferece 3 perfis pré-configurados. Mude em `src/core/config.py`:
+1. análise de intenção;
+2. tentativa de resolução por ferramenta;
+3. cache exato;
+4. recuperação semântica via ChromaDB;
+5. chamada ao LLM rápido ou profundo.
 
-```python
-PERFIL_ATIVO = "ultra_leve"  # ← "ultra_leve" | "equilibrado" | "maximo"
+## Estrutura do projeto
+
+```text
+.
+├── api.py                      # API HTTP mínima com FastAPI
+├── main.py                     # CLI interativa, batch e comandos /projeto
+├── requirements.txt            # Dependências principais
+├── requirements-dev.txt        # Dependências de teste/lint
+├── pytest.ini
+├── .env.example                # Variáveis de ambiente suportadas
+├── data/                       # Persistência local (criado/uso em runtime)
+├── src/
+│   ├── agentes/
+│   │   ├── base.py             # Classe base e factory de agentes
+│   │   ├── coordenador.py      # Roteamento/validação por heurística + LLM
+│   │   ├── executor.py         # Pipeline principal de execução
+│   │   └── sessao_codigo.py    # Loop autônomo para construção de projetos
+│   ├── core/
+│   │   ├── analisador.py       # Classificador semântico de intenção em JSON
+│   │   ├── classificador.py    # Classificação de complexidade por nível
+│   │   ├── config.py           # Perfis, modelos, thresholds e env
+│   │   ├── llm.py              # Integração com Ollama
+│   │   └── utils.py            # Utilitários simples
+│   ├── ferramentas/
+│   │   ├── resolver.py         # Cálculo, data/hora, arquivos e comandos locais
+│   │   ├── web.py              # Busca simples com DuckDuckGo
+│   │   ├── web_async.py        # Paralelização leve para tarefas I/O bound
+│   │   └── web_rag.py          # Search → Fetch → Convert → Extract
+│   └── memoria/
+│       ├── cache.py            # Cache JSON com LRU
+│       ├── semantica.py        # Memória vetorial com ChromaDB
+│       └── sqlite.py           # Histórico, resumos e métricas
+└── tests/
+    ├── test_analisador.py
+    ├── test_cache.py
+    ├── test_classificador.py
+    ├── test_coordenador.py
+    ├── test_ferramentas.py
+    ├── test_utils.py
+    └── test_web_rag.py
 ```
 
-### ⚡ Ultra-leve (padrão) — LFM2.5 da Liquid AI
+## Perfis de modelos
 
-Ideal para **Mac M1 8GB**. Pico máximo de RAM: **~1.5 GB**.
+A configuração fica em `src/core/config.py` e também pode ser controlada por `.env` com `NEURON_PERFIL`.
 
-| Função | Modelo | RAM | Nota |
-|--------|--------|-----|------|
-| Coordenador | `LiquidAI/lfm2.5-1.2b-instruct` | 731 MB | Roteamento ultra-rápido |
-| Nível 2 (rápido) | `LiquidAI/lfm2.5-1.2b-instruct` | 731 MB | Respostas diretas |
-| Nível 3 (profundo) | `maternion/lfm2.5` (8B-A1B MoE) | ~1.5 GB | Qualidade de 3-4B denso |
-| Nível 3 (código) | `qwen2.5-coder:3b` | 2.5 GB | Só para código complexo |
-| Embeddings | `nomic-embed-text` | 270 MB | ChromaDB vetorial |
+Perfis disponíveis:
 
-**Por que LFM2.5?**
-- Modelos da [Liquid AI](https://liquid.ai) otimizados para on-device
-- **LFM2.5-1.2B**: cabe em 731 MB, context window de 125K tokens
-- **LFM2.5-8B-A1B**: Mixture of Experts — 8B total mas **apenas 1B ativo por token**
-  - Qualidade comparável a modelos densos de 3-4B
-  - Velocidade superior ao Qwen 1.7B
-  - Consome apenas ~1.5 GB
+- `ultra_leve`
+- `equilibrado`
+- `maximo`
+
+Resumo do mapeamento atual:
+
+| Perfil | Coordenador | Rápido | Profundo | Código | Embedding |
+|---|---|---|---|---|---|
+| `ultra_leve` | `LiquidAI/lfm2.5-1.2b-instruct` | `LiquidAI/lfm2.5-1.2b-instruct` | `maternion/lfm2.5` | `qwen2.5-coder:3b` | `nomic-embed-text` |
+| `equilibrado` | `LiquidAI/lfm2.5-1.2b-instruct` | `qwen3:1.7b` | `qwen3:4b` | `qwen2.5-coder:3b` | `nomic-embed-text` |
+| `maximo` | `qwen3:1.7b` | `qwen3:1.7b` | `qwen3:4b` | `qwen2.5-coder:3b` | `nomic-embed-text` |
+
+## Instalação
+
+### 1. Instale e suba o Ollama
 
 ```bash
-# Instalar modelos para perfil ultra-leve
-ollama pull LiquidAI/lfm2.5-1.2b-instruct   # 731 MB
-ollama pull maternion/lfm2.5                  # ~1.5 GB (MoE 8B-A1B)
-ollama pull qwen2.5-coder:3b                  # 2.5 GB
-ollama pull nomic-embed-text                  # 270 MB
-```
-
-### 🔄 Equilibrado — Mix LFM + Qwen
-
-Pico máximo: **~3.2 GB**. Coordenador leve + modelos Qwen para respostas.
-
-| Função | Modelo | RAM |
-|--------|--------|-----|
-| Coordenador | `LiquidAI/lfm2.5-1.2b-instruct` | 731 MB |
-| Nível 2 | `qwen3:1.7b` | 1.5 GB |
-| Nível 3 | `qwen3:4b` | 3.2 GB |
-| Código | `qwen2.5-coder:3b` | 2.5 GB |
-
-```bash
-# Adicionar para perfil equilibrado
-ollama pull qwen3:1.7b
-ollama pull qwen3:4b
-```
-
-### 🧠 Máximo — Qwen puro
-
-Pico máximo: **~3.5 GB**. Maior qualidade, mais RAM.
-
-| Função | Modelo | RAM |
-|--------|--------|-----|
-| Coordenador | `qwen3:1.7b` | 1.5 GB |
-| Nível 2 | `qwen3:1.7b` | 1.5 GB |
-| Nível 3 | `qwen3:4b` | 3.2 GB |
-| Código | `qwen2.5-coder:3b` | 2.5 GB |
-
-```bash
-# Adicionar para perfil máximo
-ollama pull qwen3:1.7b
-ollama pull qwen3:4b
-```
-
-## Arquitetura de 3 Níveis
-
-```
-                    Pergunta do Usuário
-                           │
-                    ┌──────▼──────┐
-                    │ Classificar │
-                    │Complexidade │
-                    └──────┬──────┘
-                           │
-          ┌────────────────┼────────────────┐
-          │                │                │
-   ┌──────▼──────┐ ┌──────▼──────┐ ┌──────▼──────┐
-   │  NÍVEL 1    │ │  NÍVEL 2    │ │  NÍVEL 3    │
-   │   ⚡ Turbo   │ │  🚀 Rápido  │ │  🧠 Profundo │
-   │             │ │             │ │             │
-   │ • Cálculos  │ │ • LFM 1.2B  │ │ • LFM MoE   │
-   │ • Data/hora │ │   ou Qwen   │ │   ou Qwen   │
-   │ • Cache hit │ │ • 2 msgs    │ │ • ChromaDB  │
-   │ • ChromaDB  │ │ • 512 tok   │ │   RAG       │
-   │   (≥85%)    │ │ • Temp 0.4  │ │ • 5 msgs    │
-   │             │ │             │ │ • 2048 tok  │
-   │    0 MB     │ │  731MB-1.5GB│ │ 1.5GB-3.2GB │
-   │    ~5ms     │ │   ~200ms    │ │   ~3-8s     │
-   └─────────────┘ └─────────────┘ └─────────────┘
-```
-
-## Instalação Rápida
-
-```bash
-# 1. Ollama
 brew install ollama
+ollama serve
+```
 
-# 2. Modelos (perfil ultra-leve — recomendado para 8GB)
+### 2. Baixe os modelos do perfil desejado
+
+Exemplo para o perfil padrão `ultra_leve`:
+
+```bash
 ollama pull LiquidAI/lfm2.5-1.2b-instruct
 ollama pull maternion/lfm2.5
 ollama pull qwen2.5-coder:3b
 ollama pull nomic-embed-text
+```
 
-# 3. Dependências Python
+Se quiser usar API HTTP, também instale as dependências opcionais comentadas em `requirements.txt`:
+
+```bash
+pip install fastapi uvicorn
+```
+
+### 3. Instale dependências Python
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
+```
 
-# 4. Executar
+Para desenvolvimento:
+
+```bash
+pip install -r requirements-dev.txt
+```
+
+### 4. Configure ambiente
+
+Copie o arquivo de exemplo:
+
+```bash
+cp .env.example .env
+```
+
+Variáveis importantes:
+
+- `NEURON_PERFIL`
+- `NEURON_DATA_DIR`
+- `NEURON_CACHE_HABILITADO`
+- `NEURON_CHROMADB_TOP_K`
+- `NEURON_CHROMADB_THRESHOLD`
+- `NEURON_CHROMADB_NIVEL1_THRESHOLD`
+- `NEURON_RAG_MAX_DOCS`
+- `NEURON_RAG_MAX_CHARS`
+- `NEURON_WEB_RAG_MAX_PAGINAS`
+- `NEURON_WEB_RAG_FETCH_TIMEOUT`
+- `NEURON_WEB_RAG_MAX_MD_CHARS`
+- `NEURON_WEB_RAG_CACHE_TTL`
+- `NEURON_CONTEXTO_MAX_MSGS`
+- `OLLAMA_HOST` (opcional, para host remoto)
+
+## Como executar
+
+### CLI interativa
+
+```bash
 python main.py
 ```
 
-## Comandos
+### Modo batch
+
+```bash
+python main.py --query "como usar docker compose"
+python main.py --json --query "qual a última versão do node.js"
+python main.py --agente programador --nivel 3 --query "crie uma API REST com JWT"
+```
+
+### API HTTP
+
+```bash
+uvicorn api:app --host 0.0.0.0 --port 8000
+```
+
+Endpoints disponíveis:
+
+- `GET /health`
+- `GET /stats`
+- `POST /chat`
+- `POST /chat/agente`
+
+Exemplo:
+
+```bash
+curl -X POST http://localhost:8000/chat \
+  -H "Content-Type: application/json" \
+  -d '{"pergunta":"quanto é 15% de 300"}'
+```
+
+## Comandos da CLI
+
+A interface expõe comandos de operação e automação:
 
 | Comando | Descrição |
-|---------|-----------|
-| `/nivel <1\|2\|3>` | Forçar nível de performance |
-| `/agente <nome>` | Forçar agente (programador, pesquisador, analista) |
-| `/stats` | Métricas de performance por nível |
-| `/knowledge <texto>` | Adicionar conhecimento ao ChromaDB |
-| `/ingest <arquivo>` | Ingerir arquivo inteiro no ChromaDB |
-| `/contexto` | Ver histórico recente |
-| `/resumo` | Ver último resumo |
-| `/limpar` | Limpar histórico |
-| `/modelos` | Ver perfil ativo e status dos modelos |
-| `/ajuda` | Lista de comandos |
-| `/sair` | Encerrar |
+|---|---|
+| `/nivel <1|2|3>` | Força o nível da próxima execução |
+| `/agente <nome>` | Força o agente (`generalista`, `programador`, `pesquisador`, `analista`) |
+| `/stats` | Exibe métricas de performance |
+| `/knowledge <texto>` | Adiciona conhecimento ao ChromaDB |
+| `/ingest <arquivo>` | Ingestão de arquivo texto em chunks |
+| `/contexto` | Mostra histórico recente |
+| `/resumo` | Mostra o último resumo da conversa |
+| `/limpar` | Limpa histórico |
+| `/limparcache` | Limpa o cache exato |
+| `/modelos` | Mostra os modelos configurados |
+| `/projeto <descrição>` | Executa loop autônomo de geração de projeto |
+| `/projeto -i <descrição>` | Executa o loop em modo interativo |
+| `/continuar` | Avança o próximo step manualmente |
+| `/rerun <N>` | Reexecuta um step do projeto |
+| `/editar <arquivo> <instrução>` | Edita arquivo da sessão de projeto |
+| `/exportar` | Exporta os arquivos gerados |
+| `/gc` | Executa garbage collection do cache vetorial |
+| `/qualidade` | Exibe métricas da sessão de código |
+| `/ajuda` | Mostra a lista de comandos |
+| `/sair` | Encerra o programa |
 
-## Ferramentas de Sistema (Nível 1)
+## Ferramentas locais do nível 1
 
-Além de cálculo e data/hora, o agente agora suporta ações locais no projeto:
+O nível 1 tenta resolver tarefas sem custo de LLM quando possível.
 
-- `listar pasta <caminho>`
-- `ler arquivo <caminho>`
-- `criar arquivo <caminho> ::: <conteudo>`
-- `executar comando <comando>`
+Capacidades implementadas em `src/ferramentas/resolver.py`:
 
-Exemplos:
+- cálculo matemático com AST seguro;
+- data e hora local ou por fuso conhecido;
+- leitura/criação/listagem de arquivos restrita à pasta do projeto;
+- execução de comandos locais com **allowlist**.
+
+Exemplos de uso:
 
 ```text
 listar pasta src/
 ler arquivo README.md
-criar arquivo notas/planejamento.md ::: objetivo: melhorar RAG
+criar arquivo notas/planejamento.md ::: objetivo: melhorar o RAG
 executar comando ls -la src
 ```
 
-Observações:
-- As operações de arquivo ficam restritas à pasta do projeto.
-- Comandos potencialmente destrutivos são bloqueados por segurança.
+Alguns comandos permitidos:
 
-## Consumo de RAM por Cenário
+- `ls`, `cat`, `head`, `tail`, `wc`, `echo`, `pwd`, `find`, `grep`
+- `tree`, `file`, `du`, `df`, `which`, `whoami`, `date`, `uname`
+- `pip`, `pip3`, `node`, `npm`, `git`, `jq`, `sed`, `awk`, `sort`, `uniq`, `diff`
 
-### Perfil ultra-leve (LFM2.5)
+Há bloqueios explícitos para ações destrutivas, incluindo subcomandos como `git push`, `git remote` e `git config`, além de flags como `--force`, `-rf`, `--hard` e `--no-preserve-root`.
 
-| Cenário | RAM | Tempo |
-|---------|-----|-------|
-| Nível 1: ferramenta/cache | ~50 MB | <10ms |
-| Nível 1: ChromaDB busca | ~300 MB | ~50ms |
-| Nível 2: LFM2.5-1.2B | ~731 MB | ~100-500ms |
-| Nível 3: LFM2.5-8B-A1B MoE | ~1.5 GB | 1-4s |
-| Nível 3: Coder 3B (código) | ~2.5 GB | 2-5s |
+## Memória em 3 camadas
 
-### Perfil máximo (Qwen)
+### 1. Cache exato (`src/memoria/cache.py`)
 
-| Cenário | RAM | Tempo |
-|---------|-----|-------|
-| Nível 2: Qwen 1.7B | ~1.5 GB | ~200ms-1s |
-| Nível 3: Qwen 4B + RAG | ~3.5 GB | 3-8s |
-| Nível 3: Coder 3B + RAG | ~2.8 GB | 2-5s |
+- persistido em JSON;
+- política LRU;
+- até `500` entradas;
+- evita cachear consultas genéricas como `oi`.
 
-## Módulos
+### 2. Memória semântica (`src/memoria/semantica.py`)
 
-### `src/core/` — Núcleo
-- **config.py**: Perfis de modelos, configuração de agentes, níveis e thresholds
-- **llm.py**: Interface com Ollama (streaming, métricas, fallback)
-- **classificador.py**: Heurísticas para decidir nível 1/2/3
+- ChromaDB persistente em `data/chromadb`;
+- embeddings locais via Ollama (`nomic-embed-text`);
+- re-ranking híbrido com sinal semântico + lexical.
 
-### `src/agentes/` — Lógica dos agentes
-- **coordenador.py**: Roteia pergunta para o agente certo (keywords → LLM fallback)
-- **executor.py**: Pipeline de execução com os 3 níveis
+### 3. Memória relacional (`src/memoria/sqlite.py`)
 
-### `src/memoria/` — 3 Camadas de memória
-- **cache.py**: Hash exato → resposta imediata (JSON)
-- **semantica.py**: ChromaDB → busca por similaridade vetorial
-- **sqlite.py**: Histórico, resumos, contexto e métricas
+- SQLite em `data/memoria.db`;
+- armazena histórico, contexto, resumos e métricas.
 
-### `src/ferramentas/` — Execução pré-LLM
-- **resolver.py**: Cálculos matemáticos, data/hora
-- **web.py**: Pesquisa DuckDuckGo
+## Web RAG
 
-## Personalização
+O módulo `src/ferramentas/web_rag.py` implementa um pipeline mais robusto que uma busca por snippets:
 
-### Trocar perfil de modelos
+1. **Search** com DuckDuckGo (`ddgs`);
+2. **Fetch** das páginas reais;
+3. **Convert** de HTML para Markdown limpo;
+4. **Extract** com uma LLM leve para manter apenas fatos relevantes;
+5. uso desse contexto no prompt final.
 
-```python
-# src/core/config.py
-PERFIL_ATIVO = "equilibrado"  # ou "ultra_leve" ou "maximo"
+Há também uma versão rápida para nível 2 e uma versão profunda para nível 3.
+
+## Testes
+
+Executar a suíte:
+
+```bash
+pytest
 ```
 
-### Adicionar agente
+Os testes atuais cobrem principalmente:
 
-```python
-# src/core/config.py
-AGENTES["devops"] = {
-    "modelo_rapido": MODELOS["rapido"],
-    "modelo_profundo": MODELOS["completo"],
-    "system_prompt": "Você é especialista DevOps...",
-    "palavras_chave": ["docker", "k8s", "ci/cd", "pipeline"],
-    "nivel_preferido": 3,
-}
-```
+- parsing do analisador de intenção;
+- classificador de complexidade;
+- roteamento por palavras-chave;
+- cache;
+- ferramentas locais;
+- conversão HTML → Markdown no web RAG.
 
-### Ajustar thresholds
+## Observações importantes
 
-```python
-# src/core/config.py
-CHROMADB_THRESHOLD = 0.62       # Filtro semântico inicial (recall)
-CHROMADB_NIVEL1_THRESHOLD = 0.86 # Confiança para resposta direta no Nível 1
-CHROMADB_TOP_K = 6               # Candidatos para re-ranking híbrido
-RAG_MAX_DOCS = 4                 # Quantos docs entram no prompt final
-RAG_MAX_CHARS = 2200             # Tamanho máximo de contexto RAG
-```
+- O `README` antigo descrevia parte da arquitetura, mas o código atual já evoluiu para incluir `src/core/analisador.py`, `src/agentes/sessao_codigo.py`, `src/ferramentas/web_async.py` e `src/ferramentas/web_rag.py`.
+- `api.py` usa `FastAPI`, `Pydantic` e `uvicorn`, mas essas dependências ainda estão comentadas em `requirements.txt`, então precisam ser instaladas separadamente para a API funcionar.
+- A pasta `data/` no repositório contém apenas `.gitkeep`; os arquivos reais (`cache.json`, `memoria.db`, `chromadb/`, `web_cache/`) são gerados durante o uso.
 
-Com isso, o fluxo fica mais preciso em hardware limitado:
-- Busca semântica ampla (top_k maior) para não perder contexto.
-- Re-ranking híbrido (semântico + lexical) para reduzir falso positivo.
-- Contexto RAG compacto para evitar "diluição" da resposta em modelo pequeno.
+## Próximos passos sugeridos
 
-### Criar perfil customizado
-
-```python
-# src/core/config.py
-PERFIS["meu_perfil"] = {
-    "coordenador": "LiquidAI/lfm2.5-1.2b-instruct",
-    "rapido": "LiquidAI/lfm2.5-1.2b-instruct",
-    "coder": "deepseek-coder:1.3b",      # Alternativa ultra-leve para código
-    "completo": "maternion/lfm2.5",
-    "embedding": "nomic-embed-text",
-}
-```
+- adicionar instruções de instalação separadas para uso somente CLI vs uso com API;
+- documentar melhor o fluxo do `/projeto` e o formato dos artefatos exportados;
+- incluir exemplos de request/response da API e cenários de uso por agente.
