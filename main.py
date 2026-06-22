@@ -4,11 +4,15 @@ Sistema Multiagente Local — 3 Níveis de Performance
 Otimizado para Mac M1 com 8GB RAM.
 
 Uso:
-    python main.py
+    python main.py                       # Modo interativo
+    python main.py --query "pergunta"    # Modo batch (resposta única)
+    python main.py --json --query "..."  # Saída JSON estruturada
 """
 
 import sys
 import re
+import argparse
+import json as json_lib
 from pathlib import Path
 
 from rich.console import Console
@@ -18,8 +22,13 @@ from rich.text import Text
 
 from src.core.config import AGENTES, MODELOS, NIVEIS, EMBEDDING_MODEL, PERFIL_ATIVO, PERFIS
 from src.core.llm import verificar_modelo_disponivel
-from src.agentes.coordenador import rotear_com_validacao
+from src.agentes.coordenador import validar_prompt
 from src.agentes.executor import SistemaAgentes
+from src.agentes.sessao_codigo import (
+    iniciar_sessao, avancar_sessao, obter_sessao, finalizar_sessao,
+    executar_completo, rerun_step, editar_arquivo, gc_chromadb,
+    metricas_qualidade, _exportar_disco,
+)
 from src.core.utils import normalizar
 
 # Prefixos que indicam continuidade conversacional
@@ -142,6 +151,14 @@ def processar_comando(comando: str, sistema: SistemaAgentes) -> bool | str:
         table.add_row("/stats", "Métricas de performance por nível")
         table.add_row("/knowledge <texto>", "Adicionar conhecimento ao ChromaDB")
         table.add_row("/ingest <arquivo>", "Ingerir arquivo de texto no ChromaDB")
+        table.add_row("/projeto <desc>", "Executar projeto completo (agent loop autônomo)")
+        table.add_row("/projeto -i <desc>", "Projeto interativo (pede feedback a cada step)")
+        table.add_row("/continuar", "Executar próximo step manualmente")
+        table.add_row("/rerun <N>", "Re-executar step N do projeto")
+        table.add_row("/editar <arq> <instrução>", "Editar arquivo do projeto com instrução")
+        table.add_row("/exportar", "Exportar arquivos gerados para disco")
+        table.add_row("/gc", "Garbage collection do ChromaDB (remove antigos)")
+        table.add_row("/qualidade", "Métricas de qualidade da sessão")
         table.add_row("/contexto", "Ver histórico recente")
         table.add_row("/resumo", "Ver último resumo da conversa")
         table.add_row("/limpar", "Limpar histórico de mensagens")
@@ -248,6 +265,112 @@ def processar_comando(comando: str, sistema: SistemaAgentes) -> bool | str:
             else:
                 console.print(f"[red]Agente '{nome}' não existe.[/red]")
 
+    elif cmd == "/projeto":
+        if len(partes) < 2:
+            # Mostra status da sessão ativa
+            sessao = obter_sessao()
+            if sessao:
+                console.print(Panel(
+                    f"Objetivo: {sessao.objetivo}\n"
+                    f"Progresso: {sessao.progresso}\n"
+                    f"Arquivos: {', '.join(sessao.scratchpad.keys()) or 'nenhum ainda'}\n"
+                    f"Tempo: {sessao.tempo_total_ms / 1000:.1f}s",
+                    title="📂 Sessão Ativa",
+                    border_style="green",
+                ))
+                for step in sessao.plano:
+                    icon = "✅" if step.concluido else "⬜"
+                    console.print(f"  {icon} {step.numero}. {step.descricao} → {step.arquivo}")
+            else:
+                console.print("[yellow]Use: /projeto <descrição do que quer construir>[/yellow]")
+                console.print("[dim]O agent loop executa tudo automaticamente até finalizar.[/dim]")
+                console.print("[dim]Exemplo: /projeto API REST de tarefas com FastAPI e SQLite[/dim]")
+        else:
+            objetivo = partes[1].strip()
+            interativo = False
+            if objetivo.startswith("-i "):
+                interativo = True
+                objetivo = objetivo[3:].strip()
+            console.print(f"\n[bold cyan]🚀 Agent loop {'interativo ' if interativo else ''}para:[/bold cyan] {objetivo}\n")
+            sessao = executar_completo(objetivo, salvar_disco=True, interativo=interativo)
+            # Salva no histórico do sistema
+            sistema.memoria.salvar_mensagem("user", f"/projeto {objetivo}")
+            sistema.memoria.salvar_mensagem(
+                "assistant",
+                f"Projeto concluído: {sessao.progresso} steps, "
+                f"{len(sessao.scratchpad)} arquivos gerados em {sessao.tempo_total_ms/1000:.1f}s",
+                "programador",
+                3,
+            )
+
+    elif cmd == "/continuar":
+        sessao = obter_sessao()
+        if not sessao:
+            console.print("[yellow]Nenhuma sessão ativa. Use /projeto <objetivo> para iniciar.[/yellow]")
+        elif sessao.concluida:
+            console.print("[green]✅ Projeto já concluído![/green]")
+        else:
+            step = sessao.step_pendente()
+            console.print(f"[dim]⚙️  Step {step.numero}/{len(sessao.plano)}: {step.descricao}...[/dim]")
+            step_exec, codigo = avancar_sessao()
+            if step_exec and codigo:
+                titulo = f"Step {step_exec.numero} • {step_exec.arquivo or step_exec.descricao}"
+                console.print(Panel(codigo, title=titulo, border_style="green"))
+                console.print(f"[dim]Progresso: {sessao.progresso}[/dim]")
+
+    elif cmd == "/exportar":
+        sessao = obter_sessao()
+        if not sessao or not sessao.scratchpad:
+            console.print("[yellow]Nenhum arquivo para exportar.[/yellow]")
+        else:
+            caminho = _exportar_disco(sessao)
+            console.print(f"[green]✅ Exportado para: {caminho}[/green]")
+
+    elif cmd == "/rerun":
+        if len(partes) < 2 or not partes[1].strip().isdigit():
+            console.print("[yellow]Use: /rerun <número_do_step>[/yellow]")
+        else:
+            num = int(partes[1].strip())
+            step, codigo = rerun_step(num)
+            if step:
+                console.print(Panel(codigo[:2000], title=f"🔄 Re-run Step {num}", border_style="cyan"))
+            else:
+                console.print(f"[red]Step {num} não encontrado.[/red]")
+
+    elif cmd == "/editar":
+        sessao = obter_sessao()
+        if not sessao:
+            console.print("[yellow]Nenhuma sessão ativa.[/yellow]")
+        elif len(partes) < 2 or " " not in partes[1]:
+            console.print("[yellow]Use: /editar <arquivo> <instrução>[/yellow]")
+            console.print(f"[dim]Arquivos: {', '.join(sessao.scratchpad.keys())}[/dim]")
+        else:
+            resto = partes[1].strip()
+            arquivo = resto.split(" ", 1)[0]
+            instrucao = resto.split(" ", 1)[1] if " " in resto else ""
+            resultado = editar_arquivo(sessao, arquivo, instrucao)
+            console.print(Panel(resultado[:2000], title=f"✏️  {arquivo}", border_style="green"))
+
+    elif cmd == "/gc":
+        console.print("[dim]🗑️  Executando garbage collection...[/dim]")
+        removidos = gc_chromadb(dias_expiracao=30)
+        console.print(f"[green]Removidos: {removidos} documentos antigos[/green]")
+
+    elif cmd == "/qualidade":
+        sessao = obter_sessao()
+        if not sessao:
+            console.print("[yellow]Nenhuma sessão para analisar.[/yellow]")
+        else:
+            m = metricas_qualidade(sessao)
+            console.print(Panel(
+                f"Taxa de sucesso: {m['taxa_sucesso']}\n"
+                f"Steps pulados: {m['pulados']}\n"
+                f"Média tentativas/step: {m['media_tentativas']}\n"
+                f"Tempo médio/step: {m['tempo_por_step_ms']}ms\n"
+                f"Total chars gerados: {m['total_chars_gerados']}",
+                title="📊 Qualidade", border_style="blue",
+            ))
+
     else:
         console.print(f"[red]Comando desconhecido: {cmd}[/red]")
         console.print("[dim]/ajuda para ver comandos[/dim]")
@@ -256,6 +379,38 @@ def processar_comando(comando: str, sistema: SistemaAgentes) -> bool | str:
 
 
 def main():
+    parser = argparse.ArgumentParser(description="Sistema Multiagente Local")
+    parser.add_argument("--query", "-q", type=str, help="Pergunta para modo batch (não-interativo)")
+    parser.add_argument("--json", action="store_true", help="Saída em formato JSON")
+    parser.add_argument("--agente", "-a", type=str, help="Forçar agente específico")
+    parser.add_argument("--nivel", "-n", type=int, choices=[1, 2, 3], help="Forçar nível")
+    args = parser.parse_args()
+
+    # ─── Modo batch ───
+    if args.query:
+        sistema = SistemaAgentes()
+        try:
+            if args.nivel:
+                sistema.forcar_nivel(args.nivel)
+
+            if args.agente:
+                nome_agente = args.agente
+            else:
+                nome_agente = "generalista"  # executor redireciona via analisador
+
+            resposta = sistema.executar(nome_agente, args.query)
+
+            if args.json:
+                print(json_lib.dumps({
+                    "agente": nome_agente,
+                    "resposta": resposta,
+                }, ensure_ascii=False, indent=2))
+            # Em modo não-json a resposta já foi printada via streaming
+        finally:
+            sistema.fechar()
+        return
+
+    # ─── Modo interativo ───
     exibir_banner()
 
     if not verificar_dependencias():
@@ -290,8 +445,8 @@ def main():
                     agente_forcado = resultado.split(":", 1)[1]
                 continue
 
-            # Pipeline
-            query_roteamento = entrada  # default: usa entrada sem enriquecimento
+            # Pipeline — roteamento unificado via analisador no executor
+            query_roteamento = entrada
             if agente_forcado:
                 nome_agente = agente_forcado
                 agente_forcado = None
@@ -301,16 +456,17 @@ def main():
                 if query_roteamento != entrada:
                     console.print(f"[dim]🔗 Contexto: {query_roteamento[:80]}[/dim]")
 
-                nome_agente, erro_roteamento = rotear_com_validacao(query_roteamento)
-                if erro_roteamento:
-                    console.print(f"[yellow]⚠️ {erro_roteamento}[/yellow]")
+                # Validação leve (sem LLM) — só rejeita input vazio/curto
+                valido, motivo = validar_prompt(query_roteamento)
+                if not valido:
+                    console.print(f"[yellow]⚠️ {motivo}[/yellow]")
                     continue
-                if not nome_agente:
-                    console.print("[yellow]⚠️ Não foi possível determinar o agente para esta solicitação.[/yellow]")
-                    continue
-                console.print(f"[dim]🎯 {nome_agente}[/dim]")
 
-            console.print(f"[bold green]{nome_agente.capitalize()}:[/bold green] ", end="")
+                # Passa como "generalista" — o executor via analisar_intencao()
+                # redireciona para o agente correto (uma única chamada LLM)
+                nome_agente = "generalista"
+
+            console.print(f"[bold green]Neuron:[/bold green] ", end="")
             sistema.executar(nome_agente, query_roteamento)
 
     finally:

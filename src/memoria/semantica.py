@@ -107,12 +107,24 @@ class MemoriaSemantica:
             return []
 
     def adicionar(self, pergunta: str, resposta: str, agente: str = "", metadata: dict = None):
-        """Adiciona par pergunta+resposta ao ChromaDB."""
+        """Adiciona par pergunta+resposta ao ChromaDB com deduplicação."""
         if not self._verificar_embedding():
             return
 
         try:
             documento = f"Pergunta: {pergunta}\nResposta: {resposta}"
+
+            # Deduplicação: hash baseado no conteúdo (sem timestamp)
+            doc_id = hashlib.sha256(pergunta.strip().lower().encode()).hexdigest()[:16]
+
+            # Se já existe um doc com mesmo ID, verifica se vale atualizar
+            existing = self.collection.get(ids=[doc_id])
+            if existing and existing["ids"]:
+                # Já existe — atualiza apenas se a resposta for mais longa (melhor qualidade)
+                doc_existente = existing["documents"][0] if existing["documents"] else ""
+                if len(documento) <= len(doc_existente):
+                    return  # Não sobrescreve com resposta pior
+
             embedding = self._gerar_embedding(pergunta)
 
             meta = {
@@ -123,11 +135,7 @@ class MemoriaSemantica:
             if metadata:
                 meta.update(metadata)
 
-            doc_id = hashlib.sha256(
-                f"{pergunta}:{datetime.now().isoformat()}".encode()
-            ).hexdigest()[:16]
-
-            self.collection.add(
+            self.collection.upsert(
                 ids=[doc_id],
                 embeddings=[embedding],
                 documents=[documento],
@@ -137,15 +145,21 @@ class MemoriaSemantica:
             pass
 
     def adicionar_conhecimento(self, texto: str, fonte: str = "", tipo: str = "conhecimento"):
-        """Adiciona conhecimento avulso (docs, notas, etc)."""
+        """Adiciona conhecimento avulso (docs, notas, etc) com deduplicação."""
         if not self._verificar_embedding():
             return
 
         try:
-            embedding = self._gerar_embedding(texto)
-            doc_id = hashlib.sha256(texto[:100].encode()).hexdigest()[:16]
+            # Deduplicação por conteúdo
+            doc_id = hashlib.sha256(texto.strip().lower()[:200].encode()).hexdigest()[:16]
 
-            self.collection.add(
+            existing = self.collection.get(ids=[doc_id])
+            if existing and existing["ids"]:
+                return  # Já existe
+
+            embedding = self._gerar_embedding(texto)
+
+            self.collection.upsert(
                 ids=[doc_id],
                 embeddings=[embedding],
                 documents=[texto],

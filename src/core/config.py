@@ -8,14 +8,37 @@ Otimizado para Mac M1 com 8GB RAM.
   Nível 3 (Profundo) → Modelo maior (4B) com RAG completo
 """
 
+import os
 from pathlib import Path
+
+# ══════════════════════════════════════════════════════════════
+# CARREGA .env (sem dependência externa — leve para 8GB)
+# ══════════════════════════════════════════════════════════════
+
+def _carregar_env(caminho: Path):
+    """Carrega .env manualmente — zero dependências extras."""
+    if not caminho.exists():
+        return
+    for linha in caminho.read_text(encoding="utf-8").splitlines():
+        linha = linha.strip()
+        if not linha or linha.startswith("#"):
+            continue
+        if "=" not in linha:
+            continue
+        chave, _, valor = linha.partition("=")
+        chave = chave.strip()
+        valor = valor.strip().strip('"').strip("'")
+        os.environ.setdefault(chave, valor)
+
 
 # ══════════════════════════════════════════════════════════════
 # CAMINHOS
 # ══════════════════════════════════════════════════════════════
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
-DATA_DIR = BASE_DIR / "data"
+_carregar_env(BASE_DIR / ".env")
+
+DATA_DIR = Path(os.environ.get("NEURON_DATA_DIR", str(BASE_DIR / "data")))
 DATA_DIR.mkdir(exist_ok=True)
 
 # ══════════════════════════════════════════════════════════════
@@ -24,7 +47,7 @@ DATA_DIR.mkdir(exist_ok=True)
 # Escolha um perfil: "ultra_leve", "equilibrado" ou "maximo"
 # Ultra-leve usa LFM2.5 → consome METADE da RAM dos Qwen
 
-PERFIL_ATIVO = "ultra_leve"  # ← MUDE AQUI: "ultra_leve" | "equilibrado" | "maximo"
+PERFIL_ATIVO = os.environ.get("NEURON_PERFIL", "ultra_leve")
 
 PERFIS = {
     # ─── ULTRA-LEVE: LFM2.5 (melhor para 8GB) ───
@@ -176,20 +199,25 @@ AGENTES = {
 # MEMÓRIA E CONTEXTO
 # ══════════════════════════════════════════════════════════════
 
-CONTEXTO_MAX_MENSAGENS = 3
-CACHE_HABILITADO = True
+CACHE_HABILITADO = os.environ.get("NEURON_CACHE_HABILITADO", "true").lower() in ("true", "1", "yes")
 CACHE_ARQUIVO = str(DATA_DIR / "cache.json")
 MEMORIA_ARQUIVO = str(DATA_DIR / "memoria.db")
 
 # ChromaDB - Memória Semântica
 CHROMADB_DIR = str(DATA_DIR / "chromadb")
 CHROMADB_COLLECTION = "conversas"
-CHROMADB_TOP_K = 6
-CHROMADB_THRESHOLD = 0.62
-CHROMADB_NIVEL1_THRESHOLD = 0.86
-RAG_MAX_DOCS = 4
-RAG_MAX_CHARS = 2200
+CHROMADB_TOP_K = int(os.environ.get("NEURON_CHROMADB_TOP_K", "6"))
+CHROMADB_THRESHOLD = float(os.environ.get("NEURON_CHROMADB_THRESHOLD", "0.62"))
+CHROMADB_NIVEL1_THRESHOLD = float(os.environ.get("NEURON_CHROMADB_NIVEL1_THRESHOLD", "0.86"))
+RAG_MAX_DOCS = int(os.environ.get("NEURON_RAG_MAX_DOCS", "4"))
+RAG_MAX_CHARS = int(os.environ.get("NEURON_RAG_MAX_CHARS", "2200"))
 EMBEDDING_MODEL = MODELOS["embedding"]
+
+# Web RAG — Pipeline de busca profunda
+WEB_RAG_MAX_PAGINAS = int(os.environ.get("NEURON_WEB_RAG_MAX_PAGINAS", "3"))
+WEB_RAG_FETCH_TIMEOUT = int(os.environ.get("NEURON_WEB_RAG_FETCH_TIMEOUT", "8"))
+WEB_RAG_MAX_MD_CHARS = int(os.environ.get("NEURON_WEB_RAG_MAX_MD_CHARS", "6000"))
+WEB_RAG_CACHE_TTL = int(os.environ.get("NEURON_WEB_RAG_CACHE_TTL", "3600"))
 
 # ══════════════════════════════════════════════════════════════
 # COORDENADOR
@@ -201,35 +229,6 @@ COORDENADOR_SYSTEM = (
     "Responda APENAS com o nome do agente mais adequado: generalista, programador, pesquisador ou analista. "
     "Nada mais. Apenas o nome."
 )
-
-# ══════════════════════════════════════════════════════════════
-# SINAIS DE NECESSIDADE DE WEB / TEMPO REAL
-# ══════════════════════════════════════════════════════════════
-# Quando a pergunta contiver qualquer um desses termos, qualquer
-# agente vai disparar busca web e o cache será ignorado.
-
-SINAIS_WEB = [
-    # Clima
-    "temperatura", "clima em", "tempo em", "previsão do tempo", "vai chover",
-    "chuva em", "calor em", "frio em", "umidade",
-    # Cotações
-    "cotação", "preço do dólar", "preço do euro", "bitcoin hoje", "câmbio",
-    "bolsa hoje", "ibovespa", "nasdaq hoje", "selic hoje", "inflação hoje",
-    # Notícias e eventos
-    "notícia", "notícias de", "news", "resultado de", "placar", "quem ganhou",
-    "última hora", "nova versão de", "release de", "lançamento de",
-    # Documentação
-    "documentação do", "documentação de", "docs do", "docs de",
-    "como instalar", "como usar", "como configurar", "como integrar",
-    "tutorial de", "tutorial do", "guia de", "guia do",
-    "referência de", "referência do", "api do", "api de",
-    # Versão e lançamentos
-    "última versão", "versão atual", "versão do", "versão de", "qual versão",
-    "atualização do", "atualização de", "lançamento de", "lançamento do",
-    # Pesquisa explícita
-    "pesquise", "pesquisa sobre", "busque", "busca sobre", "procure",
-    "encontre", "me mostre", "quais são os", "qual o site",
-]
 
 # ══════════════════════════════════════════════════════════════
 # CLASSIFICADOR DE COMPLEXIDADE

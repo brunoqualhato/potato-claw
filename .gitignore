@@ -41,6 +41,9 @@ htmlcov/
 logs/
 *.log
 
+# Environment
+.env
+
 # Projeto: dados locais de memoria/cache vetorial
 # Mantem apenas a estrutura da pasta data/ via .gitkeep.
 data/*

@@ -1,0 +1,6 @@
+# Dependências de desenvolvimento
+-r requirements.txt
+
+pytest>=8.0,<10.0
+pytest-mock>=3.12,<4.0
+ruff>=0.4,<1.0
