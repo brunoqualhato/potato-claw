@@ -1057,10 +1057,9 @@ def _validar_integracao(sessao: SessaoCodigo, step: StepPlano, codigo: str) -> l
                 f"Para requirements.txt: liste apenas pacotes Python, um por linha (ex: flask>=3.0)"
             )
         if "def " in codigo or "import " in codigo or "class " in codigo:
-            if not any(pkg in codigo for pkg in ("flask", "sqlalchemy", "requests")):
-                problemas.append(
-                    f"O arquivo {arquivo} parece conter código Python mas deveria ser apenas lista de pacotes"
-                )
+            problemas.append(
+                f"O arquivo {arquivo} parece conter código Python mas deveria ser apenas lista de pacotes"
+            )
 
     if arquivo.endswith(".css"):
         if "from flask" in codigo or "import " in codigo or "def " in codigo:
