@@ -1,6 +1,9 @@
 """
 Camada 3 de memória: SQLite.
 Histórico, resumos, contexto persistente e métricas.
+
+Suporta isolamento por sessão (canal, pessoa) para multi-user via `sessao_ativa`.
+`sessao_ativa = ""` mantém o comportamento global (single-user/CLI), retrocompatível.
 """
 
 import logging
@@ -22,13 +25,17 @@ class Memoria:
         self.conn = sqlite3.connect(arquivo, check_same_thread=False)
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA synchronous=NORMAL")
+        # Sessao ativa para isolar historico/resumos por (canal, pessoa). "" = global.
+        self.sessao_ativa = ""
         self._criar_tabelas()
+        self._migrar()
 
     def _criar_tabelas(self):
         self.conn.executescript("""
             CREATE TABLE IF NOT EXISTS resumos (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 resumo TEXT NOT NULL,
+                sessao TEXT DEFAULT '',
                 criado_em TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS contexto (
@@ -42,6 +49,7 @@ class Memoria:
                 conteudo TEXT NOT NULL,
                 agente TEXT,
                 nivel INTEGER DEFAULT 0,
+                sessao TEXT DEFAULT '',
                 criado_em TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS metricas (
@@ -57,17 +65,28 @@ class Memoria:
         """)
         self.conn.commit()
 
+    def _migrar(self):
+        """Adiciona a coluna `sessao` em bancos antigos (retrocompativel)."""
+        for tabela in ("historico", "resumos"):
+            try:
+                self.conn.execute(f"ALTER TABLE {tabela} ADD COLUMN sessao TEXT DEFAULT ''")
+            except sqlite3.OperationalError:
+                pass  # coluna ja existe
+        self.conn.commit()
+
     def salvar_mensagem(self, papel: str, conteudo: str, agente: str | None = None, nivel: int = 0):
         self.conn.execute(
-            "INSERT INTO historico (papel, conteudo, agente, nivel, criado_em) VALUES (?, ?, ?, ?, ?)",
-            (papel, conteudo, agente, nivel, datetime.now().isoformat()),
+            "INSERT INTO historico (papel, conteudo, agente, nivel, sessao, criado_em) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (papel, conteudo, agente, nivel, self.sessao_ativa, datetime.now().isoformat()),
         )
         self.conn.commit()
 
     def ultimas_mensagens(self, n: int = 3) -> list[dict]:
         cursor = self.conn.execute(
-            "SELECT papel, conteudo, agente FROM historico ORDER BY id DESC LIMIT ?",
-            (n,),
+            "SELECT papel, conteudo, agente FROM historico WHERE sessao = ? "
+            "ORDER BY id DESC LIMIT ?",
+            (self.sessao_ativa, n),
         )
         rows = cursor.fetchall()
         return [
@@ -77,14 +96,15 @@ class Memoria:
 
     def salvar_resumo(self, resumo: str):
         self.conn.execute(
-            "INSERT INTO resumos (resumo, criado_em) VALUES (?, ?)",
-            (resumo, datetime.now().isoformat()),
+            "INSERT INTO resumos (resumo, sessao, criado_em) VALUES (?, ?, ?)",
+            (resumo, self.sessao_ativa, datetime.now().isoformat()),
         )
         self.conn.commit()
 
     def ultimo_resumo(self) -> str | None:
         cursor = self.conn.execute(
-            "SELECT resumo FROM resumos ORDER BY id DESC LIMIT 1"
+            "SELECT resumo FROM resumos WHERE sessao = ? ORDER BY id DESC LIMIT 1",
+            (self.sessao_ativa,),
         )
         row = cursor.fetchone()
         return row[0] if row else None
@@ -105,7 +125,10 @@ class Memoria:
         return row[0] if row else None
 
     def total_mensagens(self) -> int:
-        cursor = self.conn.execute("SELECT COUNT(*) FROM historico")
+        cursor = self.conn.execute(
+            "SELECT COUNT(*) FROM historico WHERE sessao = ?",
+            (self.sessao_ativa,),
+        )
         return cursor.fetchone()[0]
 
     def salvar_metrica(self, agente: str, nivel: int, tempo_ms: int,
@@ -150,7 +173,10 @@ class Memoria:
         }
 
     def limpar_historico(self):
-        self.conn.execute("DELETE FROM historico")
+        self.conn.execute(
+            "DELETE FROM historico WHERE sessao = ?",
+            (self.sessao_ativa,),
+        )
         self.conn.commit()
 
     def fechar(self):
