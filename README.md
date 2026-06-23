@@ -1,4 +1,9 @@
-# � Potato-Claw
+# 🥔 Potato-Claw
+
+[![CI](https://github.com/brunoqualhato/potato-claw/actions/workflows/ci.yml/badge.svg)](https://github.com/brunoqualhato/potato-claw/actions/workflows/ci.yml)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](https://opensource.org/licenses/MIT)
+[![Ollama](https://img.shields.io/badge/LLM-Ollama-purple.svg)](https://ollama.com/)
 
 Sistema multiagente local em Python com execução em **3 níveis de performance**, memória persistente e pesquisa web com grounding.
 Inspirado na ideia de agentes inteligentes como o OpenClaw, mas projetado para rodar em **batatas** — Mac M1 com 8GB de RAM, laptops modestos, hardware limitado.

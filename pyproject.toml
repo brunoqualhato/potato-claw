@@ -1,0 +1,37 @@
+[project]
+name = "potato-claw"
+version = "0.1.0"
+description = "Sistema multiagente local em Python com 3 níveis de performance, memória persistente e web RAG — otimizado para hardware fraco."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+authors = [{ name = "Bruno Qualhato" }]
+keywords = ["multi-agent", "llm", "ollama", "rag", "local-ai", "cli"]
+
+dependencies = [
+    "ollama>=0.6,<1.0",
+    "rich>=13.0,<15.0",
+    "chromadb>=1.0,<2.0",
+    "ddgs>=9.0,<10.0",
+]
+
+[project.optional-dependencies]
+api = ["fastapi>=0.100,<1.0", "uvicorn>=0.25,<1.0"]
+dev = ["pytest>=8.0,<10.0", "pytest-mock>=3.12,<4.0", "ruff>=0.4,<1.0"]
+
+[project.scripts]
+potato-claw = "main:main"
+
+[project.urls]
+Repository = "https://github.com/brunoqualhato/potato-claw"
+Issues = "https://github.com/brunoqualhato/potato-claw/issues"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
