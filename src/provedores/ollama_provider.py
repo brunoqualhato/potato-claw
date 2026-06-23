@@ -112,3 +112,8 @@ class OllamaProvider(LLMProvider):
                 console.print(f"  [dim]🔥 {modelo} carregado[/dim]")
             except Exception:
                 pass
+
+
+from src.provedores import registry as _registry  # noqa: E402
+
+_registry.registrar("ollama", OllamaProvider)
