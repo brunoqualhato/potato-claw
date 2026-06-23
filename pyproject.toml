@@ -10,7 +10,7 @@ keywords = ["multi-agent", "llm", "ollama", "rag", "local-ai", "cli"]
 
 dependencies = [
     "ollama>=0.6,<1.0",
-    "rich>=13.0,<15.0",
+    "rich>=13.0,<16.0",
     "chromadb>=1.0,<2.0",
     "ddgs>=9.0,<10.0",
 ]
