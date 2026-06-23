@@ -152,6 +152,8 @@ NUM_THREAD = int(os.environ.get("NEURON_NUM_THREAD", str(max(2, (os.cpu_count() 
 # por alguns minutos para não recarregar a cada turno.
 KEEP_ALIVE_EFEMERO = os.environ.get("NEURON_KEEP_ALIVE_EFEMERO", "0s")
 KEEP_ALIVE_PRINCIPAL = os.environ.get("NEURON_KEEP_ALIVE_PRINCIPAL", "5m")
+WARMUP_HABILITADO = os.environ.get("NEURON_WARMUP_HABILITADO", "false").lower() in ("true", "1", "yes")
+WARMUP_MODELOS = os.environ.get("NEURON_WARMUP_MODELOS", "rapido")
 
 # Timeout duro para não pendurar o processo quando o modelo trava sob pressão de RAM.
 OLLAMA_TIMEOUT = int(os.environ.get("NEURON_OLLAMA_TIMEOUT", "120"))
@@ -163,6 +165,13 @@ NUM_CTX_NIVEL = {
 }
 # Janela mínima para chamadas auxiliares (classificação de intenção, resumo).
 NUM_CTX_AUXILIAR = int(os.environ.get("NEURON_NUM_CTX_AUXILIAR", "1024"))
+CONTEXTO_MAX_MSGS = int(os.environ.get("NEURON_CONTEXTO_MAX_MSGS", "5"))
+
+# Ações que alteram arquivos ou executam comandos exigem confirmação explícita.
+# Use apenas em ambientes controlados/automatizados.
+AUTO_APROVAR_ACOES_LOCAIS = os.environ.get(
+    "NEURON_AUTO_APROVAR_ACOES_LOCAIS", "false"
+).lower() in ("true", "1", "yes")
 
 
 def perfil_sugerido_por_ram() -> str | None:

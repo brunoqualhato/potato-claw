@@ -10,6 +10,8 @@ Uso:
 """
 
 import argparse
+import contextlib
+import io
 import json as json_lib
 import re
 import sys
@@ -32,7 +34,16 @@ from src.agentes.sessao_codigo import (
     obter_sessao,
     rerun_step,
 )
-from src.core.config import AGENTES, EMBEDDING_MODEL, MODELOS, NIVEIS, PERFIL_ATIVO, PERFIS
+from src.core.config import (
+    AGENTES,
+    EMBEDDING_MODEL,
+    MODELOS,
+    NIVEIS,
+    PERFIL_ATIVO,
+    PERFIS,
+    WARMUP_HABILITADO,
+    WARMUP_MODELOS,
+)
 from src.core.llm import verificar_modelo_disponivel, warmup_modelos
 from src.core.logging_config import setup_logging
 from src.core.utils import normalizar
@@ -93,7 +104,7 @@ console = Console()
 
 def exibir_banner():
     banner = Text()
-    banner.append("🤖 Sistema Multiagente Local\n", style="bold blue")
+    banner.append("🥔 Potato-Claw\n", style="bold blue")
     banner.append("   Mac M1 • 8GB RAM • 3 Níveis de Performance\n", style="dim")
     banner.append(f"   Perfil: {PERFIL_ATIVO}\n", style="bold cyan")
     banner.append("   ⚡ Turbo  🚀 Rápido  🧠 Profundo\n\n", style="dim")
@@ -137,9 +148,12 @@ def verificar_dependencias():
         console.print("  [red]❌ pip install chromadb[/red]")
         return False
 
-    # Warm-up dos modelos (pré-carrega na RAM para eliminar cold start)
-    console.print("  [dim]🔥 Pré-carregando modelos...[/dim]")
-    warmup_modelos(MODELOS)
+    if WARMUP_HABILITADO:
+        funcoes = tuple(f.strip() for f in WARMUP_MODELOS.split(",") if f.strip())
+        console.print(f"  [dim]🔥 Pré-carregando: {', '.join(funcoes)}...[/dim]")
+        warmup_modelos(MODELOS, funcoes=funcoes)
+    else:
+        console.print("  [dim]🔥 Warm-up desativado (carregamento sob demanda)[/dim]")
 
     console.print()
     return True
@@ -212,7 +226,11 @@ def processar_comando(comando: str, sistema: SistemaAgentes) -> bool | str:
         table.add_column("Tempo Médio")
         for nivel, info in stats["metricas"].items():
             nome = NIVEIS.get(nivel, {}).get("nome", "?")
-            table.add_row(f"{nivel} ({nome})", str(info["total"]), f"{info['avg_ms']}ms")
+            table.add_row(
+                f"{nivel} ({nome})",
+                str(info["total"]),
+                f"{info['avg_ms']}ms (p95 {info['p95_ms']}ms)",
+            )
         console.print(table)
         console.print(f"\n  📋 Cache: {stats['cache']['entradas']} entradas, {stats['cache']['hits_total']} hits")
         console.print(f"  🧲 ChromaDB: {stats['chromadb']['documentos']} documentos")
@@ -312,7 +330,8 @@ def processar_comando(comando: str, sistema: SistemaAgentes) -> bool | str:
             sistema.memoria.salvar_mensagem("user", f"/projeto {objetivo}")
             sistema.memoria.salvar_mensagem(
                 "assistant",
-                f"Projeto concluído: {sessao.progresso} steps, "
+                f"Projeto {'concluído' if sessao.concluida else 'gerado com pendências'}: "
+                f"{sessao.progresso} steps, "
                 f"{len(sessao.scratchpad)} arquivos gerados em {sessao.tempo_total_ms/1000:.1f}s",
                 "programador",
                 3,
@@ -420,9 +439,6 @@ def main():
 
     # ─── Modo batch ───
     if args.query:
-        # Desabilita Rich formatting em batch mode para output limpo
-        _batch_console = Console(force_terminal=False, no_color=True) if not sys.stdout.isatty() else console
-
         sistema = SistemaAgentes()
         try:
             if args.nivel:
@@ -433,11 +449,18 @@ def main():
             else:
                 nome_agente = "generalista"
 
-            resposta = sistema.executar(nome_agente, args.query)
+            if args.json:
+                # Toda saída operacional fica fora do stdout para preservar JSON válido.
+                with contextlib.redirect_stdout(io.StringIO()):
+                    resposta = sistema.executar(nome_agente, args.query)
+            else:
+                resposta = sistema.executar(nome_agente, args.query)
 
             if args.json:
                 print(json_lib.dumps({
-                    "agente": nome_agente,
+                    "agente": sistema.ultimo_agente,
+                    "nivel": sistema.ultimo_nivel,
+                    "fonte": sistema.ultima_fonte,
                     "resposta": resposta,
                 }, ensure_ascii=False, indent=2))
         finally:
@@ -500,7 +523,7 @@ def main():
                 # redireciona para o agente correto (uma única chamada LLM)
                 nome_agente = "generalista"
 
-            console.print("[bold green]Neuron:[/bold green] ", end="")
+            console.print("[bold green]Potato-Claw:[/bold green] ", end="")
             sistema.executar(nome_agente, query_roteamento)
 
     finally:

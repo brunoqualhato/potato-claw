@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import os
 import threading
+from asyncio import to_thread
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
@@ -65,7 +66,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
 
 app = FastAPI(
-    title="Neuron API",
+    title="Potato-Claw API",
     description="Sistema Multiagente Local — 3 Níveis de Performance",
     version="1.0.0",
     lifespan=lifespan,
@@ -89,6 +90,8 @@ class PerguntaAgenteRequest(PerguntaRequest):
 class RespostaChat(BaseModel):
     resposta: str
     agente: str
+    nivel: int
+    fonte: str
 
 
 # ══════════════════════════════════════════════════════════════
@@ -107,12 +110,15 @@ async def chat(req: PerguntaRequest, _: str | None = Depends(verificar_api_key))
     if not _sistema:
         raise HTTPException(status_code=503, detail="Sistema não inicializado")
 
-    with _lock:
-        if req.nivel:
-            _sistema.forcar_nivel(req.nivel)
-        resposta = _sistema.executar("generalista", req.pergunta)
+    def executar():
+        with _lock:
+            if req.nivel:
+                _sistema.forcar_nivel(req.nivel)
+            resposta = _sistema.executar("generalista", req.pergunta)
+            return resposta, _sistema.ultimo_agente, _sistema.ultimo_nivel, _sistema.ultima_fonte
 
-    return RespostaChat(resposta=resposta, agente="generalista")
+    resposta, agente, nivel, fonte = await to_thread(executar)
+    return RespostaChat(resposta=resposta, agente=agente, nivel=nivel, fonte=fonte)
 
 
 @app.post("/chat/agente", response_model=RespostaChat)
@@ -121,12 +127,15 @@ async def chat_com_agente(req: PerguntaAgenteRequest, _: str | None = Depends(ve
     if not _sistema:
         raise HTTPException(status_code=503, detail="Sistema não inicializado")
 
-    with _lock:
-        if req.nivel:
-            _sistema.forcar_nivel(req.nivel)
-        resposta = _sistema.executar(req.agente, req.pergunta)
+    def executar():
+        with _lock:
+            if req.nivel:
+                _sistema.forcar_nivel(req.nivel)
+            resposta = _sistema.executar(req.agente, req.pergunta)
+            return resposta, _sistema.ultimo_agente, _sistema.ultimo_nivel, _sistema.ultima_fonte
 
-    return RespostaChat(resposta=resposta, agente=req.agente)
+    resposta, agente, nivel, fonte = await to_thread(executar)
+    return RespostaChat(resposta=resposta, agente=agente, nivel=nivel, fonte=fonte)
 
 
 @app.get("/stats")

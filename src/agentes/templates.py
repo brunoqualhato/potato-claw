@@ -409,6 +409,7 @@ def selecionar_template(objetivo: str) -> TemplateProjeto | None:
     3. Keywords de domínio (lista, contato, tarefa) — peso 1 (NÃO determinam o tipo)
     4. Match parcial — peso 0.5
     """
+    objetivo_lower = objetivo.lower()
     pontuacoes: list[tuple[TemplateProjeto, float]] = []
     # ─── KEYWORDS DE INTENÇÃO DE ENTREGA ───
     # Estas palavras indicam O QUE o usuário quer (site vs cli vs api)

@@ -102,6 +102,9 @@ def validar_prompt(texto: str) -> tuple[bool, str]:
     if not texto_limpo:
         return False, "Sua mensagem veio vazia. Envie uma pergunta com mais contexto."
 
+    if normalizar(texto_limpo) in SAUDACOES_CURTAS:
+        return True, ""
+
     if len(texto_limpo) < 3:
         return False, "A mensagem está curta demais para roteamento. Descreva melhor sua tarefa."
 

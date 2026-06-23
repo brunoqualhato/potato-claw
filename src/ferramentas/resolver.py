@@ -123,13 +123,36 @@ _SUBCMD_BLOQUEADOS = {
     "npm": {"run", "exec", "install", "uninstall", "publish"},
 }
 
+_PREFIXOS_CONFIRMACAO = ("confirmar:", "confirmo:", "execute:")
+
+
+def remover_confirmacao(texto: str) -> tuple[str, bool]:
+    """Remove prefixo de confirmação explícita e informa se ele estava presente."""
+    texto_limpo = texto.strip()
+    texto_lower = texto_limpo.lower()
+    for prefixo in _PREFIXOS_CONFIRMACAO:
+        if texto_lower.startswith(prefixo):
+            return texto_limpo[len(prefixo):].lstrip(), True
+    return texto, False
+
+
+def descrever_acao_local_mutavel(texto: str) -> str | None:
+    """Identifica ações locais com efeito colateral antes de executá-las."""
+    texto_sem_confirmacao, _ = remover_confirmacao(texto)
+    base = texto_sem_confirmacao.strip().lower()
+    if base.startswith(("criar arquivo ", "crie arquivo ")):
+        return "criação ou sobrescrita de arquivo"
+    if re.match(r"^(?:executar|rode|rodar)\s+comando\s+.+$", base):
+        return "execução de comando local"
+    return None
+
 
 def _resolver_caminho(caminho: str) -> Path:
     """Resolve caminho relativo ao projeto e impede acesso fora da raiz."""
     caminho = caminho.strip().strip('"').strip("'")
     alvo = (BASE_DIR / caminho).resolve() if not Path(caminho).is_absolute() else Path(caminho).resolve()
     base = BASE_DIR.resolve()
-    if not str(alvo).startswith(str(base)):
+    if not alvo.is_relative_to(base):
         raise ValueError("Acesso negado: caminho fora da pasta do projeto.")
     return alvo
 
@@ -502,6 +525,8 @@ def executar_ferramentas(texto: str) -> str | None:
     Tenta resolver com ferramentas ANTES de enviar ao LLM.
     Retorna None se nenhuma ferramenta se aplica.
     """
+    texto, _ = remover_confirmacao(texto)
+
     resultado = verificar_ferramenta_data(texto)
     if resultado:
         return resultado

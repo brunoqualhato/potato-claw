@@ -94,7 +94,11 @@ def _obter_exemplos_dinamicos(pergunta: str) -> str:
     try:
         from src.memoria.semantica import MemoriaSemantica
         sem = MemoriaSemantica()
-        docs = sem.buscar_similar(f"intencao:{pergunta}", top_k=3)
+        docs = sem.buscar_similar(
+            f"intencao:{pergunta}",
+            top_k=3,
+            tipos=("intencao_classificada",),
+        )
         exemplos = []
         for doc in docs:
             meta = doc.get("metadata", {})

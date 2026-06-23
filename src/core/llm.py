@@ -235,24 +235,36 @@ def verificar_modelo_disponivel(modelo: str) -> bool:
         return False
 
 
-def warmup_modelos(modelos: dict[str, str], keep_alive: str = "10m"):
+def warmup_modelos(
+    modelos: dict[str, str],
+    funcoes: tuple[str, ...] = ("rapido",),
+    keep_alive: str = KEEP_ALIVE_PRINCIPAL,
+):
     """
     Pré-carrega modelos na RAM do Ollama ao iniciar.
     Evita latência de ~2-3s na primeira chamada.
 
     Args:
         modelos: dict de perfil MODELOS (rapido, completo, etc.)
-        keep_alive: tempo para manter na RAM (padrão 10min)
+        funcoes: funções que devem ser aquecidas; embedding usa a API própria
+        keep_alive: tempo para manter na RAM
     """
-    modelos_unicos = set(modelos.values())
-    for modelo in modelos_unicos:
+    selecionados = [(funcao, modelos[funcao]) for funcao in funcoes if funcao in modelos]
+    vistos: set[str] = set()
+    for funcao, modelo in selecionados:
+        if modelo in vistos:
+            continue
+        vistos.add(modelo)
         try:
-            ollama.chat(
-                model=modelo,
-                messages=[{"role": "user", "content": "oi"}],
-                options={"num_predict": 1},
-                keep_alive=keep_alive,
-            )
+            if funcao == "embedding":
+                ollama.embeddings(model=modelo, prompt="warmup")
+            else:
+                ollama.chat(
+                    model=modelo,
+                    messages=[{"role": "user", "content": "oi"}],
+                    options={"num_predict": 1, "num_ctx": NUM_CTX_AUXILIAR},
+                    keep_alive=keep_alive,
+                )
             console.print(f"  [dim]🔥 {modelo} carregado[/dim]")
         except Exception:
             pass

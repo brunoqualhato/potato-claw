@@ -42,10 +42,24 @@ class MemoriaSemantica:
         if self._inicializado:
             return
         self.client = chromadb.PersistentClient(path=CHROMADB_DIR)
-        self.collection = self.client.get_or_create_collection(
-            name=CHROMADB_COLLECTION,
-            metadata={"hnsw:space": "cosine"},
-        )
+        nomes = {
+            "conversa": CHROMADB_COLLECTION,
+            "conhecimento": f"{CHROMADB_COLLECTION}_conhecimento",
+            "preferencia": f"{CHROMADB_COLLECTION}_preferencias",
+            "intencao_classificada": f"{CHROMADB_COLLECTION}_intencoes",
+            "codigo_gerado": f"{CHROMADB_COLLECTION}_codigo",
+            "arquitetura": f"{CHROMADB_COLLECTION}_codigo",
+        }
+        self.collections = {
+            tipo: self.client.get_or_create_collection(
+                name=nome,
+                metadata={"hnsw:space": "cosine"},
+            )
+            for tipo, nome in nomes.items()
+        }
+        # Compatibilidade com integrações existentes: conversa é a coleção padrão.
+        self.collection = self.collections["conversa"]
+        self._migrar_tipos_legados()
         self._embedding_disponivel = None
         self._inicializado = True
 
@@ -65,6 +79,29 @@ class MemoriaSemantica:
             logger.debug("Modelo de embedding '%s' indisponível: %s", EMBEDDING_MODEL, e)
             self._embedding_disponivel = False
         return self._embedding_disponivel
+
+    def _migrar_tipos_legados(self):
+        """Move documentos tipados que versões antigas gravavam na coleção padrão."""
+        try:
+            total = self.collection.count()
+            if total == 0:
+                return
+            dados = self.collection.get(include=["documents", "metadatas", "embeddings"])
+            for indice, doc_id in enumerate(dados["ids"]):
+                metadata = (dados.get("metadatas") or [])[indice] or {}
+                tipo = metadata.get("tipo", "conversa")
+                destino = self.collections.get(tipo)
+                if tipo == "conversa" or destino is None or destino.name == self.collection.name:
+                    continue
+                destino.upsert(
+                    ids=[doc_id],
+                    documents=[dados["documents"][indice]],
+                    embeddings=[dados["embeddings"][indice]],
+                    metadatas=[metadata],
+                )
+                self.collection.delete(ids=[doc_id])
+        except Exception as e:
+            logger.debug("Migração de memória legada ignorada: %s", e)
 
     def _gerar_embedding(self, texto: str) -> list[float]:
         """Gera embedding usando Ollama."""
@@ -87,7 +124,12 @@ class MemoriaSemantica:
             return 0.0
         return intersecao / uniao
 
-    def buscar_similar(self, pergunta: str, top_k: int = CHROMADB_TOP_K) -> list[dict]:
+    def buscar_similar(
+        self,
+        pergunta: str,
+        top_k: int = CHROMADB_TOP_K,
+        tipos: tuple[str, ...] | None = None,
+    ) -> list[dict]:
         """
         Busca documentos similares.
         Retorna lista de {conteudo, similaridade, metadata}.
@@ -95,36 +137,47 @@ class MemoriaSemantica:
         if not self._verificar_embedding():
             return []
 
-        if self.collection.count() == 0:
-            return []
-
         try:
             embedding = self._gerar_embedding(pergunta)
-            results = self.collection.query(
-                query_embeddings=[embedding],
-                n_results=min(top_k, self.collection.count()),
-                include=["documents", "metadatas", "distances"],
-            )
-
             documentos = []
-            for i, doc in enumerate(results["documents"][0]):
-                distancia = results["distances"][0][i]
-                similaridade = 1 - (distancia / 2)
+            tipos_busca = tipos or ("conversa", "conhecimento", "preferencia")
+            colecoes_vistas: set[str] = set()
+            for tipo in tipos_busca:
+                collection = self.collections.get(tipo)
+                if collection is None or collection.name in colecoes_vistas:
+                    continue
+                colecoes_vistas.add(collection.name)
+                total = collection.count()
+                if total == 0:
+                    continue
 
-                if similaridade >= CHROMADB_THRESHOLD:
-                    score_lexical = self._score_lexical(pergunta, doc)
-                    score_hibrido = (similaridade * 0.82) + (score_lexical * 0.18)
-                    documentos.append({
-                        "conteudo": doc,
-                        "similaridade": similaridade,
-                        "score_lexical": score_lexical,
-                        "score_hibrido": score_hibrido,
-                        "metadata": results["metadatas"][0][i],
-                    })
+                results = collection.query(
+                    query_embeddings=[embedding],
+                    n_results=min(top_k, total),
+                    include=["documents", "metadatas", "distances"],
+                )
+
+                for i, doc in enumerate(results["documents"][0]):
+                    distancia = results["distances"][0][i]
+                    similaridade = 1 - (distancia / 2)
+
+                    if similaridade >= CHROMADB_THRESHOLD:
+                        score_lexical = self._score_lexical(pergunta, doc)
+                        score_hibrido = (similaridade * 0.82) + (score_lexical * 0.18)
+                        metadata = results["metadatas"][0][i] or {}
+                        tipo_doc = metadata.get("tipo")
+                        if tipo_doc and tipo_doc not in tipos_busca:
+                            continue
+                        documentos.append({
+                            "conteudo": doc,
+                            "similaridade": similaridade,
+                            "score_lexical": score_lexical,
+                            "score_hibrido": score_hibrido,
+                            "metadata": metadata,
+                        })
 
             documentos.sort(key=lambda d: d.get("score_hibrido", d["similaridade"]), reverse=True)
-
-            return documentos
+            return documentos[:top_k]
 
         except Exception as e:
             logger.warning("Erro ao buscar similar no ChromaDB: %s", e)
@@ -158,7 +211,7 @@ class MemoriaSemantica:
             if metadata:
                 meta.update(metadata)
 
-            self.collection.upsert(
+            self.collections["conversa"].upsert(
                 ids=[doc_id],
                 embeddings=[embedding],
                 documents=[documento],
@@ -175,13 +228,14 @@ class MemoriaSemantica:
         try:
             doc_id = hashlib.sha256(texto.strip().lower()[:200].encode()).hexdigest()[:16]
 
-            existing = self.collection.get(ids=[doc_id])
+            collection = self.collections.get(tipo, self.collections["conhecimento"])
+            existing = collection.get(ids=[doc_id])
             if existing and existing["ids"]:
                 return  # Já existe
 
             embedding = self._gerar_embedding(texto)
 
-            self.collection.upsert(
+            collection.upsert(
                 ids=[doc_id],
                 embeddings=[embedding],
                 documents=[texto],
@@ -195,11 +249,20 @@ class MemoriaSemantica:
             logger.warning("Erro ao adicionar conhecimento ao ChromaDB: %s", e)
 
     def total_documentos(self) -> int:
-        return self.collection.count()
+        return sum(
+            collection.count()
+            for collection in {collection.name: collection for collection in self.collections.values()}.values()
+        )
 
     def estatisticas(self) -> dict:
         return {
             "documentos": self.total_documentos(),
+            "por_colecao": {
+                collection.name: collection.count()
+                for collection in {
+                    collection.name: collection for collection in self.collections.values()
+                }.values()
+            },
             "embedding_model": EMBEDDING_MODEL,
             "disponivel": self._verificar_embedding(),
         }

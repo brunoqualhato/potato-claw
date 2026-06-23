@@ -5,6 +5,7 @@ Histórico, resumos, contexto persistente e métricas.
 
 import logging
 import sqlite3
+import statistics
 from datetime import datetime
 
 from src.core.config import MEMORIA_ARQUIVO
@@ -16,7 +17,9 @@ class Memoria:
     """Memória persistente com SQLite."""
 
     def __init__(self, arquivo: str = MEMORIA_ARQUIVO):
-        self.conn = sqlite3.connect(arquivo)
+        # A API executa o pipeline em worker thread para não bloquear o event loop.
+        # O lock da aplicação serializa o acesso ao estado compartilhado.
+        self.conn = sqlite3.connect(arquivo, check_same_thread=False)
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA synchronous=NORMAL")
         self._criar_tabelas()
@@ -115,13 +118,35 @@ class Memoria:
         self.conn.commit()
 
     def metricas_resumo(self) -> dict:
-        cursor = self.conn.execute("""
-            SELECT nivel, COUNT(*) as total, AVG(tempo_ms) as avg_ms
-            FROM metricas GROUP BY nivel ORDER BY nivel
-        """)
+        cursor = self.conn.execute(
+            "SELECT nivel, tempo_ms, tokens_entrada, tokens_saida FROM metricas ORDER BY nivel, tempo_ms"
+        )
+        por_nivel: dict[int, list[tuple[int, int, int]]] = {}
+        for nivel, tempo_ms, tokens_in, tokens_out in cursor.fetchall():
+            por_nivel.setdefault(nivel, []).append((tempo_ms, tokens_in, tokens_out))
+
+        resumo = {}
+        for nivel, valores in por_nivel.items():
+            tempos = [v[0] for v in valores]
+            indice_p95 = max(0, min(len(tempos) - 1, round((len(tempos) - 1) * 0.95)))
+            resumo[nivel] = {
+                "total": len(valores),
+                "avg_ms": round(statistics.fmean(tempos), 1),
+                "p50_ms": round(statistics.median(tempos), 1),
+                "p95_ms": tempos[indice_p95],
+                "tokens_entrada": sum(v[1] for v in valores),
+                "tokens_saida": sum(v[2] for v in valores),
+            }
+        return resumo
+
+    def metricas_por_fonte(self) -> dict:
+        cursor = self.conn.execute(
+            """SELECT fonte, COUNT(*), AVG(tempo_ms)
+               FROM metricas GROUP BY fonte ORDER BY COUNT(*) DESC"""
+        )
         return {
-            row[0]: {"total": row[1], "avg_ms": round(row[2], 1)}
-            for row in cursor.fetchall()
+            (fonte or "desconhecida"): {"total": total, "avg_ms": round(avg_ms, 1)}
+            for fonte, total, avg_ms in cursor.fetchall()
         }
 
     def limpar_historico(self):

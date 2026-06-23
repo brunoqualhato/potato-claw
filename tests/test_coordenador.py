@@ -70,6 +70,10 @@ class TestRotearPorPalavrasChave:
 
 
 class TestValidarPrompt:
+    def test_saudacao_e_valida(self):
+        valido, _ = validar_prompt("oi")
+        assert valido is True
+
     def test_vazio(self):
         valido, _ = validar_prompt("")
         assert valido is False

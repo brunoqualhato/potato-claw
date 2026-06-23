@@ -21,26 +21,33 @@ from rich.console import Console
 from rich.panel import Panel
 
 from src.agentes.base import Agente, ConfigAgente, criar_agente
+from src.agentes.coordenador import rotear_por_palavras_chave
 from src.core.analisador import IntencaoAnalisada, analisar_intencao, salvar_intencao_classificada
 from src.core.classificador import classificar_complexidade, explicar_nivel
 from src.core.config import (
     AGENTES,
+    AUTO_APROVAR_ACOES_LOCAIS,
     CHROMADB_NIVEL1_THRESHOLD,
+    CONTEXTO_MAX_MSGS,
     KEEP_ALIVE_PRINCIPAL,
     NUM_CTX_NIVEL,
+    PERFIL_ATIVO,
     RAG_MAX_CHARS,
     RAG_MAX_DOCS,
+    RAM_GB,
 )
 from src.core.llm import chamar_llm, resumir_conversa, verificar_modelo_disponivel
 from src.ferramentas.resolver import (
     _extrair_local_hora,
     calcular,
     criar_arquivo,
+    descrever_acao_local_mutavel,
     executar_comando_local,
     executar_ferramentas,
     ler_arquivo,
     listar_pasta,
     obter_data_hora,
+    remover_confirmacao,
     verificar_ferramenta_saudacao,
 )
 from src.ferramentas.web_async import paralelo_sync
@@ -61,6 +68,10 @@ class SistemaAgentes:
         self.cache = cache or Cache()
         self.semantica = semantica or MemoriaSemantica()
         self.nivel_forcado: int | None = None
+        self.ultimo_agente = "generalista"
+        self.ultimo_nivel = 0
+        self.ultima_fonte = ""
+        self._acao_local_confirmada = False
         self._agentes: dict[str, Agente] = self._inicializar_agentes()
 
     def _inicializar_agentes(self) -> dict[str, Agente]:
@@ -99,7 +110,16 @@ class SistemaAgentes:
         """
         inicio = time.time()
 
-        # Análise de intenção + roteamento de agente
+        # Caminho barato primeiro: ferramenta determinística e cache não
+        # precisam carregar coordenador nem modelo de embeddings.
+        pergunta, self._acao_local_confirmada = remover_confirmacao(pergunta)
+        resultado_preflight = self._preflight_deterministico(
+            nome_agente, pergunta, inicio
+        )
+        if resultado_preflight:
+            return resultado_preflight
+
+        # Só usa a LLM coordenadora quando os caminhos baratos não resolveram.
         intencao, nome_agente, agente_cfg, agente_obj = self._analisar_e_rotear(
             nome_agente, pergunta
         )
@@ -137,6 +157,55 @@ class SistemaAgentes:
             docs_similares, inicio
         )
 
+    def _preflight_deterministico(
+        self, nome_agente: str, pergunta: str, inicio: float
+    ) -> str | None:
+        """Resolve ações óbvias sem carregar qualquer modelo."""
+        agente_heuristico = (
+            nome_agente
+            if nome_agente != "generalista"
+            else rotear_por_palavras_chave(pergunta) or "generalista"
+        )
+
+        acao_mutavel = descrever_acao_local_mutavel(pergunta)
+        if (
+            acao_mutavel
+            and not self._acao_local_confirmada
+            and not AUTO_APROVAR_ACOES_LOCAIS
+        ):
+            resposta = (
+                f"Confirmação necessária para {acao_mutavel}. "
+                f"Repita a solicitação começando com `confirmar:`."
+            )
+            self._registrar_execucao(agente_heuristico, 1, "confirmacao")
+            self._salvar_confirmacao(pergunta, resposta, agente_heuristico, inicio)
+            return resposta
+
+        resultado_ferramenta = executar_ferramentas(pergunta)
+        if resultado_ferramenta:
+            console.print(
+                Panel(resultado_ferramenta, title="⚡ Nível 1 • Ferramenta", border_style="cyan")
+            )
+            self._registrar_execucao(agente_heuristico, 1, "ferramenta")
+            self._salvar(
+                pergunta, resultado_ferramenta, agente_heuristico, nivel=1, inicio=inicio
+            )
+            return resultado_ferramenta
+
+        # Busca exata não depende de embeddings. Tenta primeiro o agente mais
+        # provável e depois o agente solicitado para preservar compatibilidade.
+        agentes_cache = dict.fromkeys((agente_heuristico, nome_agente))
+        for agente_cache in agentes_cache:
+            resposta_cache = self.cache.buscar(f"{agente_cache}:{pergunta}")
+            if resposta_cache:
+                console.print("[dim]📋 Nível 1 • Cache[/dim]")
+                console.print(resposta_cache, style="green")
+                self._registrar_execucao(agente_cache, 1, "cache")
+                self._salvar_metrica(agente_cache, 1, inicio, fonte="cache")
+                return resposta_cache
+
+        return None
+
     # ══════════════════════════════════════════════════════════════
     # ANÁLISE E ROTEAMENTO
     # ══════════════════════════════════════════════════════════════
@@ -156,8 +225,11 @@ class SistemaAgentes:
             nome_agente = intencao.agente
             console.print(f"[dim]🎯 {nome_agente}[/dim]")
 
+        if nome_agente not in AGENTES:
+            nome_agente = "generalista"
         agente_cfg = AGENTES[nome_agente]
         agente_obj = self._obter_agente(nome_agente)
+        self.ultimo_agente = nome_agente
         return intencao, nome_agente, agente_cfg, agente_obj
 
     def _classificar_nivel(self, pergunta: str, agente_cfg: dict) -> int:
@@ -195,28 +267,29 @@ class SistemaAgentes:
             console.print(
                 Panel(resultado_ferramenta, title="⚡ Nível 1 • Ferramenta", border_style="cyan")
             )
-            self._salvar(pergunta, resultado_ferramenta, nome_agente, nivel=1, inicio=inicio)
+            if resultado_ferramenta.startswith("Confirmação necessária"):
+                self._salvar_confirmacao(
+                    pergunta, resultado_ferramenta, nome_agente, inicio
+                )
+                self._registrar_execucao(nome_agente, 1, "confirmacao")
+            else:
+                self._salvar(
+                    pergunta, resultado_ferramenta, nome_agente, nivel=1, inicio=inicio
+                )
+                self._registrar_execucao(nome_agente, 1, "ferramenta")
             return resultado_ferramenta, []
 
-        # 1b. Fallback: ferramentas heurísticas
-        resultado_heuristico = executar_ferramentas(pergunta)
-        if resultado_heuristico:
-            console.print(
-                Panel(resultado_heuristico, title="⚡ Nível 1 • Ferramenta", border_style="cyan")
-            )
-            self._salvar(pergunta, resultado_heuristico, nome_agente, nivel=1, inicio=inicio)
-            return resultado_heuristico, []
-
-        # 1c. Cache exato — ignorado se precisa de dados frescos
+        # 1b. Cache exato — ignorado se precisa de dados frescos
         cache_key = f"{nome_agente}:{pergunta}"
         resposta_cache = None if intencao.precisa_web else self.cache.buscar(cache_key)
         if resposta_cache:
             console.print("[dim]📋 Nível 1 • Cache[/dim]")
             console.print(resposta_cache, style="green")
             self._salvar_metrica(nome_agente, 1, inicio, fonte="cache")
+            self._registrar_execucao(nome_agente, 1, "cache")
             return resposta_cache, []
 
-        # 1d. ChromaDB — busca semântica
+        # 1c. ChromaDB — busca semântica
         docs_similares = self.semantica.buscar_similar(pergunta)
         if docs_similares and nivel == 1 and not intencao.precisa_web:
             melhor = docs_similares[0]
@@ -226,6 +299,7 @@ class SistemaAgentes:
                 console.print(f"[dim]🧲 Nível 1 • ChromaDB ({score:.0%})[/dim]")
                 console.print(resposta, style="green")
                 self._salvar_metrica(nome_agente, 1, inicio, fonte="chromadb")
+                self._registrar_execucao(nome_agente, 1, "chromadb")
                 return resposta, docs_similares
 
         return None, docs_similares
@@ -283,6 +357,7 @@ class SistemaAgentes:
                 resposta_final = agente_obj.pos_execucao(pergunta, corrigida)
                 # Salva classificação como bem-sucedida
                 salvar_intencao_classificada(pergunta, intencao)
+                self._registrar_execucao(nome_agente, 2, "llm_rapido_autocorrecao")
                 return resposta_final
 
             console.print("[dim]↑ Ajuste de precisão: promovido para Nível 3[/dim]")
@@ -292,6 +367,7 @@ class SistemaAgentes:
         resposta_final = agente_obj.pos_execucao(pergunta, resultado["resposta"])
         # Salva classificação como bem-sucedida
         salvar_intencao_classificada(pergunta, intencao)
+        self._registrar_execucao(nome_agente, 2, "llm_rapido")
         return resposta_final
 
     def _autocorrecao_rapida(self, pergunta: str, resposta_fraca: str, modelo: str) -> str | None:
@@ -341,7 +417,7 @@ class SistemaAgentes:
         )
 
         mensagens = self._montar_contexto(
-            n_msgs=5,
+            n_msgs=min(5, CONTEXTO_MAX_MSGS),
             contexto_busca=contexto_busca,
             pergunta=pergunta,
             contexto_rag=contexto_rag,
@@ -378,6 +454,7 @@ class SistemaAgentes:
 
         # Salva classificação como bem-sucedida para few-shot futuro
         salvar_intencao_classificada(pergunta, intencao)
+        self._registrar_execucao(nome_agente, 3, "llm_profundo")
 
         return resposta_final
 
@@ -444,6 +521,18 @@ class SistemaAgentes:
             return None
 
         params = intencao.parametros
+
+        if (
+            intencao.ferramenta in {"arquivo", "comando"}
+            and not self._acao_local_confirmada
+            and not AUTO_APROVAR_ACOES_LOCAIS
+        ):
+            acao = params.get("acao", "")
+            if intencao.ferramenta == "comando" or acao == "criar":
+                return (
+                    "Confirmação necessária para executar esta ação local. "
+                    "Repita a solicitação começando com `confirmar:`."
+                )
 
         if intencao.ferramenta == "data_hora":
             local = params.get("local", "")
@@ -620,11 +709,25 @@ class SistemaAgentes:
         self.cache.salvar(cache_key, resposta, agente)
         self.semantica.adicionar(pergunta, resposta, agente)
 
+    def _salvar_confirmacao(
+        self, pergunta: str, resposta: str, agente: str, inicio: float
+    ):
+        """Registra o turno sem transformar uma confirmação em conhecimento/cache."""
+        self.memoria.salvar_mensagem("user", pergunta)
+        self.memoria.salvar_mensagem("assistant", resposta, agente, 1)
+        self._salvar_metrica(agente, 1, inicio, fonte="confirmacao")
+
     def _salvar_metrica(self, agente: str, nivel: int, inicio: float,
                         tokens_in: int = 0, tokens_out: int = 0, fonte: str = ""):
         """Salva métrica de performance."""
         tempo_ms = int((time.time() - inicio) * 1000)
         self.memoria.salvar_metrica(agente, nivel, tempo_ms, tokens_in, tokens_out, fonte)
+
+    def _registrar_execucao(self, agente: str, nivel: int, fonte: str):
+        """Expõe metadados da última execução para CLI/API."""
+        self.ultimo_agente = agente
+        self.ultimo_nivel = nivel
+        self.ultima_fonte = fonte
 
     def _gerar_resumo(self, modelo: str):
         """Gera resumo automático."""
@@ -650,7 +753,9 @@ class SistemaAgentes:
             "cache": self.cache.estatisticas(),
             "chromadb": self.semantica.estatisticas(),
             "metricas": self.memoria.metricas_resumo(),
+            "metricas_por_fonte": self.memoria.metricas_por_fonte(),
             "mensagens_total": self.memoria.total_mensagens(),
+            "hardware": {"ram_gb": RAM_GB, "perfil": PERFIL_ATIVO},
         }
 
     def ingerir_conhecimento(self, texto: str, fonte: str = ""):

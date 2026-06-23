@@ -32,6 +32,16 @@ class TestCache:
         cache_temp.salvar("ok", "entendi", "generalista")
         assert cache_temp.buscar("ok") is None
 
+    def test_nao_cacheia_consultas_temporais(self, cache_temp):
+        pergunta = "pesquisador:qual a cotação do dólar hoje"
+        cache_temp.salvar(pergunta, "R$ 5,00", "pesquisador")
+        assert cache_temp.buscar(pergunta) is None
+
+    def test_nao_cacheia_consulta_de_versao_sem_palavra_atual(self, cache_temp):
+        pergunta = "pesquisador:qual a versão do node"
+        cache_temp.salvar(pergunta, "22", "pesquisador")
+        assert cache_temp.buscar(pergunta) is None
+
     def test_limpar(self, cache_temp):
         cache_temp.salvar("teste completo", "resposta", "programador")
         cache_temp.limpar()
