@@ -23,7 +23,12 @@ import logging
 
 import ollama
 
-from src.core.config import COORDENADOR_MODELO
+from src.core.config import (
+    COORDENADOR_MODELO,
+    KEEP_ALIVE_EFEMERO,
+    NUM_CTX_AUXILIAR,
+    NUM_THREAD,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -156,8 +161,13 @@ def analisar_intencao(pergunta: str, modelo: str = COORDENADOR_MODELO) -> Intenc
             format="json",
             options={
                 "temperature": 0.05,
-                "num_predict": 100,
+                "num_predict": 120,
+                "num_thread": NUM_THREAD,
+                "num_ctx": NUM_CTX_AUXILIAR,
             },
+            # Modelo auxiliar: solta da RAM logo após classificar (não fica
+            # residente competindo memória com o modelo de resposta).
+            keep_alive=KEEP_ALIVE_EFEMERO,
         )
         raw = response["message"]["content"].strip()
         return _parse_resposta(raw)

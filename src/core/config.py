@@ -114,6 +114,69 @@ NIVEIS = {
 }
 
 # ══════════════════════════════════════════════════════════════
+# INFERÊNCIA OLLAMA - tuning para hardware fraco ("PC de batata")
+# ══════════════════════════════════════════════════════════════
+# Em máquinas modestas (ex.: M1 8GB) o que mais trava é:
+#   1. vários modelos residentes ao mesmo tempo (coordenador + embedding +
+#      rápido/profundo) estourando a RAM e indo para swap;
+#   2. KV cache sem teto (num_ctx grande) consumindo RAM por requisição.
+# Os parâmetros abaixo atacam os dois pontos. Tudo é sobreescrevível por env.
+
+def _detectar_ram_gb() -> float:
+    """RAM total em GB, sem depender de psutil (mantém o projeto leve)."""
+    try:
+        meminfo = Path("/proc/meminfo")
+        if meminfo.exists():
+            for linha in meminfo.read_text().splitlines():
+                if linha.startswith("MemTotal:"):
+                    return int(linha.split()[1]) / (1024 * 1024)
+        import subprocess
+        out = subprocess.run(
+            ["sysctl", "-n", "hw.memsize"],
+            capture_output=True, text=True, timeout=2,
+        )
+        if out.returncode == 0 and out.stdout.strip().isdigit():
+            return int(out.stdout.strip()) / (1024 ** 3)
+    except Exception:
+        pass
+    return 0.0
+
+
+RAM_GB = round(_detectar_ram_gb(), 1)
+
+# Threads: deixa 1 núcleo livre para o SO não engasgar em máquina fraca.
+NUM_THREAD = int(os.environ.get("NEURON_NUM_THREAD", str(max(2, (os.cpu_count() or 4) - 1))))
+
+# keep_alive: "efêmero" solta da RAM os modelos auxiliares logo após o uso
+# (coordenador, analisador, resumo); "principal" segura o modelo de resposta
+# por alguns minutos para não recarregar a cada turno.
+KEEP_ALIVE_EFEMERO = os.environ.get("NEURON_KEEP_ALIVE_EFEMERO", "0s")
+KEEP_ALIVE_PRINCIPAL = os.environ.get("NEURON_KEEP_ALIVE_PRINCIPAL", "5m")
+
+# Timeout duro para não pendurar o processo quando o modelo trava sob pressão de RAM.
+OLLAMA_TIMEOUT = int(os.environ.get("NEURON_OLLAMA_TIMEOUT", "120"))
+
+# num_ctx por nível (janela de contexto = KV cache = RAM). Menor no nível rápido.
+NUM_CTX_NIVEL = {
+    2: int(os.environ.get("NEURON_NUM_CTX_RAPIDO", "2048")),
+    3: int(os.environ.get("NEURON_NUM_CTX_PROFUNDO", "4096")),
+}
+# Janela mínima para chamadas auxiliares (classificação de intenção, resumo).
+NUM_CTX_AUXILIAR = int(os.environ.get("NEURON_NUM_CTX_AUXILIAR", "1024"))
+
+
+def perfil_sugerido_por_ram() -> str | None:
+    """Sugere um perfil pelo total de RAM. Não força nada (respeita NEURON_PERFIL)."""
+    if not RAM_GB:
+        return None
+    if RAM_GB < 9:
+        return "ultra_leve"
+    if RAM_GB < 17:
+        return "equilibrado"
+    return "maximo"
+
+
+# ══════════════════════════════════════════════════════════════
 # AGENTES
 # ══════════════════════════════════════════════════════════════
 

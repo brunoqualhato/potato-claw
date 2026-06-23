@@ -26,6 +26,8 @@ from src.core.config import (
     CHROMADB_NIVEL1_THRESHOLD,
     RAG_MAX_CHARS,
     RAG_MAX_DOCS,
+    NUM_CTX_NIVEL,
+    KEEP_ALIVE_PRINCIPAL,
 )
 from src.core.classificador import classificar_complexidade, explicar_nivel
 from src.core.llm import chamar_llm, resumir_conversa, verificar_modelo_disponivel
@@ -254,6 +256,8 @@ class SistemaAgentes:
             stream=True,
             max_tokens=512,
             temperatura=0.4,
+            num_ctx=NUM_CTX_NIVEL[2],
+            keep_alive=KEEP_ALIVE_PRINCIPAL,
         )
 
         self._salvar_metrica(
@@ -346,6 +350,8 @@ class SistemaAgentes:
             stream=True,
             max_tokens=2048,
             temperatura=0.7,
+            num_ctx=NUM_CTX_NIVEL[3],
+            keep_alive=KEEP_ALIVE_PRINCIPAL,
         )
 
         self._salvar(pergunta, resultado["resposta"], nome_agente, nivel=3, inicio=inicio)
