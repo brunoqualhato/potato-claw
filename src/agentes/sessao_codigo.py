@@ -917,6 +917,13 @@ def _validar_step(sessao: SessaoCodigo, step: StepPlano, codigo: str) -> dict:
         probs.append("TODOs não resolvidos")
     if codigo.count("pass") > 3 and len(codigo) < 400:
         probs.append("implementação stub")
+    # Conta linhas com apenas "pass" ou "# Implementação..."
+    linhas_stub = sum(
+        1 for linha in codigo.split("\n")
+        if linha.strip() in ("pass",) or linha.strip().startswith("# Implementação")
+    )
+    if linhas_stub > 2:
+        probs.append(f"{linhas_stub} linhas stub/pass — código incompleto")
     if probs:
         return {"valido": False, "problemas": probs, "decisoes": []}
 

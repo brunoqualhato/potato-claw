@@ -50,6 +50,9 @@ TEMPLATES: list[TemplateProjeto] = [
             "todo", "cadastro", "gerenciador", "calculadora", "conversor", "jogo",
             "quiz", "agenda", "inventário", "estoque", "registro", "controle",
             "sistema", "ferramenta", "utilitário", "app", "aplicativo",
+            "galeria", "fotos", "foto", "álbum", "imagem", "imagens",
+            "notas", "nota", "diário", "receita", "receitas", "biblioteca",
+            "catálogo", "catalogo", "organizador", "player", "música",
         ],
         stack="Python",
         steps=[
