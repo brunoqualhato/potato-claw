@@ -24,20 +24,27 @@ Performance (Mac M1 8GB):
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
-import hashlib
 import time
-import urllib.request
 import urllib.error
-from html.parser import HTMLParser
+import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
+from html.parser import HTMLParser
 from typing import Optional
 
 from ddgs import DDGS
 
-from src.core.config import MODELOS, DATA_DIR, WEB_RAG_MAX_PAGINAS, WEB_RAG_FETCH_TIMEOUT, WEB_RAG_MAX_MD_CHARS, WEB_RAG_CACHE_TTL
+from src.core.config import (
+    DATA_DIR,
+    MODELOS,
+    WEB_RAG_CACHE_TTL,
+    WEB_RAG_FETCH_TIMEOUT,
+    WEB_RAG_MAX_MD_CHARS,
+    WEB_RAG_MAX_PAGINAS,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +64,10 @@ CACHE_TTL_S = WEB_RAG_CACHE_TTL
 
 # Headers realistas para evitar bloqueio
 _HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "User-Agent": (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
+        " (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    ),
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.8",
 }
@@ -278,7 +288,9 @@ def html_para_markdown(html: str) -> str:
 # ══════════════════════════════════════════════════════════════
 
 
-_PROMPT_EXTRATOR = """Você é um extrator de fatos. Sua tarefa é ler o texto fonte abaixo e extrair APENAS as informações relevantes para responder a pergunta do usuário.
+_PROMPT_EXTRATOR = """\
+Você é um extrator de fatos. Sua tarefa é ler o texto fonte abaixo e extrair \
+APENAS as informações relevantes para responder a pergunta do usuário.
 
 REGRAS:
 - Extraia SOMENTE fatos presentes no texto fonte

@@ -3,15 +3,14 @@ Testes para o módulo sessao_codigo (funções puras sem Ollama).
 Cobre parsing, validação, truncamento e lógica de sessão.
 """
 
-import pytest
 from src.agentes.sessao_codigo import (
-    _validar_sintaxe,
+    SessaoCodigo,
+    StepPlano,
     _extrair_codigo,
     _parse_plano,
     _parse_validacao,
     _truncar_inteligente,
-    SessaoCodigo,
-    StepPlano,
+    _validar_sintaxe,
     metricas_qualidade,
 )
 
@@ -82,7 +81,10 @@ class TestParsePlano:
         assert sessao.plano[0].descricao == "Criar main"
 
     def test_json_com_dependencias(self):
-        raw = '{"steps": [{"descricao": "A", "arquivo": "a.py", "dependencias": []}, {"descricao": "B", "arquivo": "b.py", "dependencias": ["a.py"]}]}'
+        raw = (
+            '{"steps": [{"descricao": "A", "arquivo": "a.py", "dependencias": []},'
+            ' {"descricao": "B", "arquivo": "b.py", "dependencias": ["a.py"]}]}'
+        )
         sessao = _parse_plano("teste", raw)
         assert len(sessao.plano) == 2
         assert sessao.plano[1].dependencias == ["a.py"]

@@ -12,8 +12,11 @@ import chromadb
 import ollama as ollama_client
 
 from src.core.config import (
-    CHROMADB_DIR, CHROMADB_COLLECTION, CHROMADB_TOP_K,
-    CHROMADB_THRESHOLD, EMBEDDING_MODEL,
+    CHROMADB_COLLECTION,
+    CHROMADB_DIR,
+    CHROMADB_THRESHOLD,
+    CHROMADB_TOP_K,
+    EMBEDDING_MODEL,
 )
 
 logger = logging.getLogger(__name__)

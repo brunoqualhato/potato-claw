@@ -1,7 +1,9 @@
 """Testes para o sistema de cache."""
 
 import tempfile
+
 import pytest
+
 from src.memoria.cache import Cache
 
 

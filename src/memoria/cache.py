@@ -4,11 +4,11 @@ Hash da pergunta → resposta instantânea.
 Eviction policy: máximo 500 entradas, remove as menos usadas.
 """
 
-import json
 import hashlib
+import json
 import logging
-from pathlib import Path
 from datetime import datetime
+from pathlib import Path
 
 from src.core.config import CACHE_ARQUIVO, CACHE_HABILITADO
 

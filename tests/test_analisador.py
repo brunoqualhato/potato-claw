@@ -1,7 +1,6 @@
 """Testes para o analisador de intenção (parsing de JSON, sem Ollama)."""
 
-import pytest
-from src.core.analisador import _parse_resposta, IntencaoAnalisada
+from src.core.analisador import _parse_resposta
 
 
 class TestParseResposta:

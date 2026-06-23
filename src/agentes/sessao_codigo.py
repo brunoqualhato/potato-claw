@@ -31,9 +31,9 @@ import ollama
 from rich.console import Console
 from rich.panel import Panel
 
-from src.core.config import MODELOS, DATA_DIR
+from src.agentes.templates import obter_esqueleto, selecionar_template
+from src.core.config import DATA_DIR, MODELOS
 from src.memoria.semantica import MemoriaSemantica
-from src.agentes.templates import selecionar_template, obter_esqueleto
 
 console = Console()
 
@@ -493,7 +493,8 @@ Organize em arquivos de código. Cada arquivo = 1 step.
 REGRAS:
 - O PRIMEIRO step DEVE ser o arquivo de dependências (requirements.txt ou package.json)
 - O SEGUNDO step DEVE ser os módulos/classes de lógica de negócio
-- O PENÚLTIMO step DEVE ser o ponto de entrada principal (main.py/index.js/app.py) que importa os módulos e oferece interface interativa
+- O PENÚLTIMO step DEVE ser o ponto de entrada principal (main.py/index.js/app.py) que importa os módulos\
+ e oferece interface interativa
 - O ÚLTIMO step DEVE ser README.md com instruções claras de execução
 - Todos os arquivos devem se conectar via imports
 - O ponto de entrada deve ser EXECUTÁVEL e INTERATIVO (menu, prompts, servidor)
@@ -593,7 +594,6 @@ def executar_projeto(
     if indexar_existente:
         indice = _indexar_projeto()
         if indice:
-            resumo_projeto = "\n".join(f"  {k}" for k in list(indice.keys())[:20])
             console.print(f"[dim]📁 Projeto existente indexado ({len(indice)} arquivos)[/dim]")
             sessao.decisoes.insert(0, f"Projeto existente: {', '.join(list(indice.keys())[:10])}")
 
@@ -622,7 +622,7 @@ def executar_projeto(
             sessao.rollback()
             step.pulado = True
             sessao.erros.append(f"Step {step.numero} pulado: {step.descricao}")
-            console.print(f"  [red]⏭️  Step pulado (rollback aplicado)[/red]")
+            console.print("  [red]⏭️  Step pulado (rollback aplicado)[/red]")
 
         # [8] Persiste após cada step
         _persistir_sessao(sessao)
@@ -635,7 +635,7 @@ def executar_projeto(
                     console.print("[yellow]Sessão pausada. Use /projeto para continuar.[/yellow]")
                     break
                 sessao.decisoes.append(f"Feedback do usuário: {feedback}")
-                console.print(f"[dim]📝 Decisão registrada[/dim]")
+                console.print("[dim]📝 Decisão registrada[/dim]")
 
     # ─── FINALIZAÇÃO ───
     sessao.tempo_total_ms = int((time.time() - inicio_total) * 1000)
@@ -729,7 +729,7 @@ def _executar_step_com_validacao(
                 if v2["valido"]:
                     sessao.registrar_resultado(step, codigo)
                     _salvar_aprendizado(semantica, sessao, step, codigo)
-                    console.print(f"  [green]✅ Corrigido[/green]")
+                    console.print("  [green]✅ Corrigido[/green]")
                     return True
 
     # Última chance: aceita se tem sintaxe OK
@@ -738,7 +738,7 @@ def _executar_step_com_validacao(
             sessao.registrar_resultado(step, codigo)
             sessao.erros.append(f"Step {step.numero}: aceito com ressalvas")
             _salvar_aprendizado(semantica, sessao, step, codigo)
-            console.print(f"  [yellow]⚡ Aceito com ressalvas[/yellow]")
+            console.print("  [yellow]⚡ Aceito com ressalvas[/yellow]")
             return True
 
     return False
@@ -845,7 +845,7 @@ def _planejar_cot(objetivo: str) -> SessaoCodigo:
             options={"temperature": 0.3, "num_predict": 300},
         )
         funcionalidades = r1["message"]["content"].strip()
-        console.print(f"[dim]  Funcionalidades identificadas[/dim]")
+        console.print("[dim]  Funcionalidades identificadas[/dim]")
 
         # Passo 2: organizar em steps
         r2 = ollama.chat(
@@ -1057,10 +1057,13 @@ def _parse_plano(objetivo: str, raw: str) -> SessaoCodigo:
         return SessaoCodigo(objetivo=objetivo, plano=[StepPlano(numero=1, descricao=objetivo, arquivo="main.py")])
     depth, fim = 0, -1
     for i in range(inicio, len(raw)):
-        if raw[i] == "{": depth += 1
+        if raw[i] == "{":
+            depth += 1
         elif raw[i] == "}":
             depth -= 1
-            if depth == 0: fim = i + 1; break
+            if depth == 0:
+                fim = i + 1
+                break
     if fim == -1:
         return SessaoCodigo(objetivo=objetivo, plano=[StepPlano(numero=1, descricao=objetivo, arquivo="main.py")])
     try:
@@ -1078,17 +1081,26 @@ def _parse_plano(objetivo: str, raw: str) -> SessaoCodigo:
 def _parse_validacao(raw: str) -> dict:
     """Parseia JSON de validação."""
     inicio = raw.find("{")
-    if inicio == -1: return {"valido": True, "problemas": [], "decisoes": []}
+    if inicio == -1:
+        return {"valido": True, "problemas": [], "decisoes": []}
     depth, fim = 0, -1
     for i in range(inicio, len(raw)):
-        if raw[i] == "{": depth += 1
+        if raw[i] == "{":
+            depth += 1
         elif raw[i] == "}":
             depth -= 1
-            if depth == 0: fim = i + 1; break
-    if fim == -1: return {"valido": True, "problemas": [], "decisoes": []}
+            if depth == 0:
+                fim = i + 1
+                break
+    if fim == -1:
+        return {"valido": True, "problemas": [], "decisoes": []}
     try:
         d = json.loads(raw[inicio:fim])
-        return {"valido": bool(d.get("valido", True)), "problemas": d.get("problemas", []), "decisoes": d.get("decisoes", [])}
+        return {
+            "valido": bool(d.get("valido", True)),
+            "problemas": d.get("problemas", []),
+            "decisoes": d.get("decisoes", []),
+        }
     except (json.JSONDecodeError, KeyError):
         return {"valido": True, "problemas": [], "decisoes": []}
 

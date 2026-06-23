@@ -9,10 +9,10 @@ Uso:
     python main.py --json --query "..."  # Saída JSON estruturada
 """
 
-import sys
-import re
 import argparse
 import json as json_lib
+import re
+import sys
 from pathlib import Path
 
 from rich.console import Console
@@ -20,16 +20,21 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from src.core.logging_config import setup_logging
-from src.core.config import AGENTES, MODELOS, NIVEIS, EMBEDDING_MODEL, PERFIL_ATIVO, PERFIS
-from src.core.llm import verificar_modelo_disponivel, warmup_modelos
 from src.agentes.coordenador import validar_prompt
 from src.agentes.executor import SistemaAgentes
 from src.agentes.sessao_codigo import (
-    iniciar_sessao, avancar_sessao, obter_sessao, finalizar_sessao,
-    executar_completo, rerun_step, editar_arquivo, gc_chromadb,
-    metricas_qualidade, _exportar_disco,
+    _exportar_disco,
+    avancar_sessao,
+    editar_arquivo,
+    executar_completo,
+    gc_chromadb,
+    metricas_qualidade,
+    obter_sessao,
+    rerun_step,
 )
+from src.core.config import AGENTES, EMBEDDING_MODEL, MODELOS, NIVEIS, PERFIL_ATIVO, PERFIS
+from src.core.llm import verificar_modelo_disponivel, warmup_modelos
+from src.core.logging_config import setup_logging
 from src.core.utils import normalizar
 
 # Prefixos que indicam continuidade conversacional
@@ -126,7 +131,7 @@ def verificar_dependencias():
 
     # ChromaDB
     try:
-        import chromadb
+        import chromadb  # noqa: F401
         console.print("  ✅ ChromaDB disponível")
     except ImportError:
         console.print("  [red]❌ pip install chromadb[/red]")
@@ -300,7 +305,8 @@ def processar_comando(comando: str, sistema: SistemaAgentes) -> bool | str:
             if objetivo.startswith("-i "):
                 interativo = True
                 objetivo = objetivo[3:].strip()
-            console.print(f"\n[bold cyan]🚀 Agent loop {'interativo ' if interativo else ''}para:[/bold cyan] {objetivo}\n")
+            modo = "interativo " if interativo else ""
+            console.print(f"\n[bold cyan]🚀 Agent loop {modo}para:[/bold cyan] {objetivo}\n")
             sessao = executar_completo(objetivo, salvar_disco=True, interativo=interativo)
             # Salva no histórico do sistema
             sistema.memoria.salvar_mensagem("user", f"/projeto {objetivo}")
@@ -415,7 +421,7 @@ def main():
     # ─── Modo batch ───
     if args.query:
         # Desabilita Rich formatting em batch mode para output limpo
-        batch_console = Console(force_terminal=False, no_color=True) if not sys.stdout.isatty() else console
+        _batch_console = Console(force_terminal=False, no_color=True) if not sys.stdout.isatty() else console
 
         sistema = SistemaAgentes()
         try:
@@ -494,7 +500,7 @@ def main():
                 # redireciona para o agente correto (uma única chamada LLM)
                 nome_agente = "generalista"
 
-            console.print(f"[bold green]Neuron:[/bold green] ", end="")
+            console.print("[bold green]Neuron:[/bold green] ", end="")
             sistema.executar(nome_agente, query_roteamento)
 
     finally:

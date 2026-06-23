@@ -4,16 +4,15 @@ O LLM só interpreta o resultado — não faz o cálculo.
 """
 
 import ast
+import math
 import operator
 import re
-import math
 import shlex
 import subprocess
-from pathlib import Path
 from datetime import datetime
+from pathlib import Path
 
 from src.core.config import BASE_DIR
-
 
 TIMEOUT_COMANDO_S = 20
 MAX_SAIDA_CHARS = 4000

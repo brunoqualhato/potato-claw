@@ -1,6 +1,7 @@
 """Testes para o classificador de complexidade."""
 
 import pytest
+
 from src.core.classificador import classificar_complexidade, explicar_nivel
 
 
