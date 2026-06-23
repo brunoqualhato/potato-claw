@@ -15,7 +15,7 @@ def test_processar_uma_gera_outbound():
 
         bus.assinar_saida(coletor)
 
-        def processar(agente, pergunta):
+        def processar(agente, pergunta, sessao=""):
             return f"eco: {pergunta}"
 
         rt = Runtime(bus, processar)
@@ -43,7 +43,7 @@ def test_runtime_sinaliza_typing_enquanto_processa():
             async def sinalizar_typing(self, canal, chat_id):
                 chamadas.append((canal, chat_id))
 
-        def processar(agente, pergunta):
+        def processar(agente, pergunta, sessao=""):
             time.sleep(0.05)  # da tempo do loop de typing rodar
             return "ok"
 
@@ -72,7 +72,7 @@ def test_runtime_nao_morre_quando_processar_falha():
 
         bus.assinar_saida(coletor)
 
-        def processar(agente, texto):
+        def processar(agente, texto, sessao=""):
             raise RuntimeError("boom")
 
         rt = Runtime(bus, processar)
@@ -84,3 +84,24 @@ def test_runtime_nao_morre_quando_processar_falha():
     out, recebidas = asyncio.run(cenario())
     assert out.texto == ERRO_PROCESSAMENTO
     assert len(recebidas) == 1
+
+
+def test_runtime_passa_sessao_canal_pessoa():
+    """O runtime deriva a sessao de canal:pessoa e passa ao processador."""
+    async def cenario():
+        bus = MessageBus()
+        capturado = {}
+
+        def processar(agente, pergunta, sessao=""):
+            capturado["sessao"] = sessao
+            return "ok"
+
+        rt = Runtime(bus, processar)
+        await rt.processar_uma(
+            InboundMessage(texto="oi", sender=SenderInfo(id="42"),
+                           canal="telegram", chat_id="c1")
+        )
+        return capturado
+
+    capturado = asyncio.run(cenario())
+    assert capturado["sessao"] == "telegram:42"
