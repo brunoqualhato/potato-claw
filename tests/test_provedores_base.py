@@ -1,5 +1,6 @@
 import pytest
-from src.provedores.base import RespostaLLM, LLMProvider
+
+from src.provedores.base import LLMProvider, RespostaLLM
 
 
 def test_resposta_llm_tem_defaults():

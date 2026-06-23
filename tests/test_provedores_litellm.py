@@ -1,7 +1,8 @@
 import sys
 from unittest.mock import MagicMock, patch
-from src.provedores.litellm_provider import LiteLLMProvider
+
 from src.provedores.base import RespostaLLM
+from src.provedores.litellm_provider import LiteLLMProvider
 
 
 def test_chat_usa_litellm_lazy():

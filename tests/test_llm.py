@@ -1,30 +1,41 @@
-"""Testes das otimizações de carregamento de modelos."""
+"""Testes da fachada de providers."""
 
-from unittest.mock import patch
+from unittest.mock import MagicMock
 
-from src.core.llm import warmup_modelos
+from src.core import llm
+from src.provedores.base import RespostaLLM
 
 
-@patch("src.core.llm.ollama")
-def test_warmup_aquece_apenas_funcoes_selecionadas(mock_ollama):
-    modelos = {
-        "rapido": "modelo-rapido",
-        "completo": "modelo-profundo",
-        "embedding": "modelo-embedding",
+def test_chamar_llm_preserva_formato_publico(monkeypatch):
+    provider = MagicMock()
+    provider.chat.return_value = RespostaLLM(
+        resposta="ok",
+        tempo_ms=12,
+        tokens_entrada=3,
+        tokens_saida=2,
+    )
+    monkeypatch.setattr(llm, "_provider", provider)
+
+    resultado = llm.chamar_llm("modelo", "system", [], stream=False)
+
+    assert resultado == {
+        "resposta": "ok",
+        "tempo_ms": 12,
+        "tokens_entrada": 3,
+        "tokens_saida": 2,
+        "erro": False,
     }
 
-    warmup_modelos(modelos, funcoes=("rapido",))
 
-    mock_ollama.chat.assert_called_once()
-    mock_ollama.embeddings.assert_not_called()
+def test_warmup_repassa_funcoes_selecionadas(monkeypatch):
+    provider = MagicMock()
+    monkeypatch.setattr(llm, "_provider", provider)
+    modelos = {"rapido": "modelo-rapido", "embedding": "modelo-embedding"}
 
+    llm.warmup_modelos(modelos, funcoes=("embedding",))
 
-@patch("src.core.llm.ollama")
-def test_warmup_embedding_usa_api_de_embedding(mock_ollama):
-    warmup_modelos({"embedding": "modelo-embedding"}, funcoes=("embedding",))
-
-    mock_ollama.embeddings.assert_called_once_with(
-        model="modelo-embedding",
-        prompt="warmup",
+    provider.warmup.assert_called_once_with(
+        modelos,
+        funcoes=("embedding",),
+        keep_alive=llm.KEEP_ALIVE_PRINCIPAL,
     )
-    mock_ollama.chat.assert_not_called()

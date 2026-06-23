@@ -6,6 +6,8 @@ sem a dependência instalada; só falha se alguém chamar de fato o provider.
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
+from importlib.util import find_spec
 
 from src.provedores.base import LLMProvider, RespostaLLM
 
@@ -30,6 +32,7 @@ class LiteLLMProvider(LLMProvider):
         num_thread: int | None = None,
         keep_alive: str | None = None,
         timeout: float | None = None,
+        on_token: Callable[[str], None] | None = None,
     ) -> RespostaLLM:
         litellm = self._lib()
         msgs = [{"role": "system", "content": system_prompt}, *mensagens]
@@ -54,13 +57,19 @@ class LiteLLMProvider(LLMProvider):
         # litellm não tem inventário local; assume-se configurado externamente.
         return True
 
-    def warmup(self, modelos: dict[str, str], keep_alive: str = "10m") -> None:
+    def warmup(
+        self,
+        modelos: dict[str, str],
+        funcoes: tuple[str, ...] = ("rapido",),
+        keep_alive: str = "5m",
+    ) -> None:
         return None
 
 
-try:  # registro só se quisermos disponibilizar mesmo sem litellm instalado
+try:
     from src.provedores import registry as _registry
 
-    _registry.registrar("litellm", LiteLLMProvider)
+    if find_spec("litellm") is not None:
+        _registry.registrar("litellm", LiteLLMProvider)
 except Exception:
     pass

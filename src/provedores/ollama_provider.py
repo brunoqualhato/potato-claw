@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 
 import ollama
 from rich.console import Console
 
+from src.core.config import NUM_CTX_AUXILIAR, NUM_THREAD, OLLAMA_TIMEOUT
 from src.provedores.base import LLMProvider, RespostaLLM
 
 console = Console()
@@ -13,6 +15,9 @@ console = Console()
 
 class OllamaProvider(LLMProvider):
     nome = "ollama"
+
+    def __init__(self, client=None) -> None:
+        self._client = client or ollama.Client(timeout=OLLAMA_TIMEOUT)
 
     def chat(
         self,
@@ -27,17 +32,19 @@ class OllamaProvider(LLMProvider):
         num_thread: int | None = None,
         keep_alive: str | None = None,
         timeout: float | None = None,
+        on_token: Callable[[str], None] | None = None,
     ) -> RespostaLLM:
         msgs = [{"role": "system", "content": system_prompt}]
         for m in mensagens:
             msgs.append({"role": m["role"], "content": m["content"]})
 
-        options: dict = {"temperature": temperatura, "num_predict": max_tokens}
+        options: dict = {
+            "temperature": temperatura,
+            "num_predict": max_tokens,
+            "num_thread": num_thread or NUM_THREAD,
+        }
         if num_ctx is not None:
             options["num_ctx"] = num_ctx
-        if num_thread is not None:
-            options["num_thread"] = num_thread
-
         extra: dict = {}
         if keep_alive is not None:
             extra["keep_alive"] = keep_alive
@@ -46,29 +53,36 @@ class OllamaProvider(LLMProvider):
         resposta = ""
         tokens_in = 0
         tokens_out = 0
+        erro = False
 
         try:
             if stream:
-                for chunk in ollama.chat(
+                for chunk in self._client.chat(
                     model=modelo, messages=msgs, stream=True, options=options, **extra
                 ):
                     texto = chunk["message"]["content"]
                     resposta += texto
-                    console.print(texto, end="", style="green")
+                    if on_token is not None:
+                        on_token(texto)
+                    else:
+                        console.print(texto, end="", style="green")
                     if "eval_count" in chunk:
                         tokens_out = chunk["eval_count"]
                     if "prompt_eval_count" in chunk:
                         tokens_in = chunk["prompt_eval_count"]
                     if len(resposta) > 300 and resposta[-150:] == resposta[-300:-150]:
-                        console.print("\n[dim]⚠️ Repetição detectada, parando.[/dim]")
+                        if on_token is None:
+                            console.print("\n[dim]⚠️ Repetição detectada, parando.[/dim]")
                         break
-                console.print()
+                if on_token is None:
+                    console.print()
             else:
-                r = ollama.chat(model=modelo, messages=msgs, options=options, **extra)
+                r = self._client.chat(model=modelo, messages=msgs, options=options, **extra)
                 resposta = r["message"]["content"]
                 tokens_in = r.get("prompt_eval_count", 0)
                 tokens_out = r.get("eval_count", 0)
         except Exception as e:
+            erro = True
             resposta = f"Erro ao chamar modelo {modelo}: {e}"
             console.print(f"\n[red]{resposta}[/red]")
 
@@ -77,11 +91,12 @@ class OllamaProvider(LLMProvider):
             tempo_ms=int((time.time() - inicio) * 1000),
             tokens_entrada=tokens_in,
             tokens_saida=tokens_out,
+            erro=erro,
         )
 
     def modelo_disponivel(self, modelo: str) -> bool:
         try:
-            resposta = ollama.list()
+            resposta = self._client.list()
             nomes_raw: list[str] = []
             if isinstance(resposta, dict):
                 for m in resposta.get("models", []):
@@ -100,15 +115,32 @@ class OllamaProvider(LLMProvider):
         except Exception:
             return False
 
-    def warmup(self, modelos: dict[str, str], keep_alive: str = "10m") -> None:
-        for modelo in set(modelos.values()):
+    def warmup(
+        self,
+        modelos: dict[str, str],
+        funcoes: tuple[str, ...] = ("rapido",),
+        keep_alive: str = "5m",
+    ) -> None:
+        selecionados = [(funcao, modelos[funcao]) for funcao in funcoes if funcao in modelos]
+        vistos: set[str] = set()
+        for funcao, modelo in selecionados:
+            if modelo in vistos:
+                continue
+            vistos.add(modelo)
             try:
-                ollama.chat(
-                    model=modelo,
-                    messages=[{"role": "user", "content": "oi"}],
-                    options={"num_predict": 1},
-                    keep_alive=keep_alive,
-                )
+                if funcao == "embedding":
+                    ollama.embeddings(model=modelo, prompt="warmup")
+                else:
+                    self._client.chat(
+                        model=modelo,
+                        messages=[{"role": "user", "content": "oi"}],
+                        options={
+                            "num_predict": 1,
+                            "num_ctx": NUM_CTX_AUXILIAR,
+                            "num_thread": NUM_THREAD,
+                        },
+                        keep_alive=keep_alive,
+                    )
                 console.print(f"  [dim]🔥 {modelo} carregado[/dim]")
             except Exception:
                 pass

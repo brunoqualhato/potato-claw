@@ -1,4 +1,5 @@
 import pytest
+
 import src.provedores  # noqa: F401  (dispara auto-registro)
 from src.provedores import registry
 from src.provedores.ollama_provider import OllamaProvider

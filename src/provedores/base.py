@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from dataclasses import dataclass
 
 
@@ -12,6 +13,7 @@ class RespostaLLM:
     tempo_ms: int = 0
     tokens_entrada: int = 0
     tokens_saida: int = 0
+    erro: bool = False
 
 
 class LLMProvider(ABC):
@@ -32,6 +34,7 @@ class LLMProvider(ABC):
         num_thread: int | None = None,
         keep_alive: str | None = None,
         timeout: float | None = None,
+        on_token: Callable[[str], None] | None = None,
     ) -> RespostaLLM:
         ...
 
@@ -40,5 +43,10 @@ class LLMProvider(ABC):
         ...
 
     @abstractmethod
-    def warmup(self, modelos: dict[str, str], keep_alive: str = "10m") -> None:
+    def warmup(
+        self,
+        modelos: dict[str, str],
+        funcoes: tuple[str, ...] = ("rapido",),
+        keep_alive: str = "5m",
+    ) -> None:
         ...
