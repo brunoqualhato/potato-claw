@@ -53,6 +53,10 @@ from src.memoria.sqlite import Memoria
 logger = logging.getLogger(__name__)
 console = Console()
 
+# Ferramentas cuja resposta NAO deve ir pro cache: saudacao (variada a cada vez)
+# e data_hora (muda com o tempo). Cachear congelaria uma resposta volatil.
+_FERRAMENTAS_VOLATEIS = frozenset({"saudacao", "data_hora"})
+
 
 class SistemaAgentes:
     """Gerencia a execução dos agentes com 3 níveis de performance."""
@@ -196,16 +200,21 @@ class SistemaAgentes:
             console.print(
                 Panel(resultado_ferramenta, title="⚡ Nível 1 • Ferramenta", border_style="cyan")
             )
-            self._salvar(pergunta, resultado_ferramenta, nome_agente, nivel=1, inicio=inicio)
+            # Ferramentas volateis (saudacao/data_hora) nao vao pro cache.
+            cachear = intencao.ferramenta not in _FERRAMENTAS_VOLATEIS
+            self._salvar(pergunta, resultado_ferramenta, nome_agente, nivel=1,
+                         inicio=inicio, cachear=cachear)
             return resultado_ferramenta, []
 
-        # 1b. Fallback: ferramentas heurísticas
+        # 1b. Fallback: ferramentas heurísticas (saudacao/data/calculo - baratas,
+        # nao vale cachear; saudacao e data sao volateis).
         resultado_heuristico = executar_ferramentas(pergunta)
         if resultado_heuristico:
             console.print(
                 Panel(resultado_heuristico, title="⚡ Nível 1 • Ferramenta", border_style="cyan")
             )
-            self._salvar(pergunta, resultado_heuristico, nome_agente, nivel=1, inicio=inicio)
+            self._salvar(pergunta, resultado_heuristico, nome_agente, nivel=1,
+                         inicio=inicio, cachear=False)
             return resultado_heuristico, []
 
         # 1c. Cache exato — ignorado se precisa de dados frescos
@@ -461,10 +470,11 @@ class SistemaAgentes:
             return None
 
         if intencao.ferramenta == "saudacao":
-            return verificar_ferramenta_saudacao(pergunta) or (
-                "Olá! Estou pronto para ajudar. "
-                "Você pode pedir código, análise, pesquisa ou execução de comandos."
-            )
+            # So responde rapido se for saudacao pura. Pergunta real classificada
+            # erroneamente como "saudacao" pelo modelo pequeno retorna None e cai
+            # pro LLM (identidade + contexto), em vez de uma resposta canned
+            # repetida e fora de contexto.
+            return verificar_ferramenta_saudacao(pergunta)
 
         if intencao.ferramenta == "arquivo":
             acao = params.get("acao", "")
@@ -607,7 +617,8 @@ class SistemaAgentes:
     # PERSISTÊNCIA
     # ══════════════════════════════════════════════════════════════
 
-    def _salvar(self, pergunta: str, resposta: str, agente: str, nivel: int, inicio: float):
+    def _salvar(self, pergunta: str, resposta: str, agente: str, nivel: int,
+                inicio: float, cachear: bool = True):
         """Salva em todas as camadas de memória (ignora respostas de erro)."""
         if resposta.startswith("Erro ao chamar modelo") or resposta.startswith("Erro"):
             self.memoria.salvar_mensagem("user", pergunta)
@@ -616,11 +627,12 @@ class SistemaAgentes:
 
         self.memoria.salvar_mensagem("user", pergunta)
         self.memoria.salvar_mensagem("assistant", resposta, agente, nivel)
-        # Cacheia apenas respostas DETERMINISTICAS (nivel 1: ferramentas como
-        # calculo/data). Respostas conversacionais (nivel 2/3) dependem do historico:
+        # Cacheia apenas respostas DETERMINISTICAS e ESTAVEIS (nivel 1: ferramentas
+        # como calculo). Respostas conversacionais (nivel 2/3) dependem do historico:
         # cachea-las por (agente, pergunta) faria "qual meu nome?" retornar uma
-        # resposta velha, ignorando o contexto da conversa.
-        if nivel == 1:
+        # resposta velha, ignorando o contexto. E ferramentas volateis (saudacao,
+        # variada; data_hora, muda no tempo) passam cachear=False - senao congelam.
+        if nivel == 1 and cachear:
             self.cache.salvar(f"{agente}:{pergunta}", resposta, agente)
         self.semantica.adicionar(pergunta, resposta, agente)
 

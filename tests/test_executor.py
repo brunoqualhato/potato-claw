@@ -3,9 +3,9 @@ Testes de integração para o pipeline principal (executor).
 Usa mocks do Ollama para testar o fluxo end-to-end sem GPU.
 """
 
-import tempfile
+from unittest.mock import MagicMock, patch
+
 import pytest
-from unittest.mock import patch, MagicMock
 
 from src.agentes.executor import SistemaAgentes
 from src.memoria.cache import Cache
@@ -58,7 +58,24 @@ class TestPipelineNivel1:
         }
 
         resultado = sistema_mock.executar("generalista", "oi")
-        assert "Olá" in resultado or "pronto" in resultado.lower()
+        assert "potato-claw" in resultado.lower()
+
+    def test_saudacao_mal_classificada_nao_retorna_canned(self, sistema_mock):
+        """Pergunta real classificada como 'saudacao' pelo modelo pequeno NAO
+        deve cair em resposta canned: a ferramenta retorna None e o pipeline
+        promove pro LLM (identidade + contexto)."""
+        from src.core.analisador import IntencaoAnalisada
+        intencao = IntencaoAnalisada(agente="generalista", ferramenta="saudacao")
+        assert sistema_mock._executar_ferramenta_por_intencao(intencao, "beleza e você?") is None
+
+    def test_saudacao_nao_e_cacheada(self, sistema_mock):
+        """Saudacao e variada: nao deve ir pro cache (senao congela uma frase
+        e perguntas mal classificadas servem resposta velha do cache)."""
+        from src.core.analisador import IntencaoAnalisada
+        intencao = IntencaoAnalisada(agente="generalista", ferramenta="saudacao")
+        resultado, _ = sistema_mock._pipeline_nivel1(intencao, "oi", "generalista", 1, 0.0)
+        assert resultado is not None
+        assert sistema_mock.cache.buscar("generalista:oi") is None
 
     @patch("src.core.analisador.ollama")
     def test_ferramenta_data_hora(self, mock_ollama, sistema_mock):

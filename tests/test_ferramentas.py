@@ -1,12 +1,14 @@
 """Testes para as ferramentas de execução pré-LLM."""
 
 import pytest
+
 from src.ferramentas.resolver import (
+    _RESPOSTAS_SAUDACAO,
     calcular,
-    verificar_ferramenta_data,
-    verificar_ferramenta_calculo,
-    verificar_ferramenta_saudacao,
     executar_ferramentas,
+    verificar_ferramenta_calculo,
+    verificar_ferramenta_data,
+    verificar_ferramenta_saudacao,
 )
 
 
@@ -76,15 +78,22 @@ class TestVerificarFerramentaCalculo:
 
 class TestVerificarFerramentaSaudacao:
     @pytest.mark.parametrize("entrada", [
-        "oi", "olá", "bom dia", "boa tarde", "hello",
+        "oi", "olá", "bom dia", "boa tarde", "hello", "OI", " e aí ",
     ])
-    def test_saudacoes(self, entrada):
+    def test_saudacoes_puras_retornam_variante_com_identidade(self, entrada):
         resultado = verificar_ferramenta_saudacao(entrada)
-        assert resultado is not None
-        assert "pronto" in resultado.lower() or "Olá" in resultado
+        assert resultado in _RESPOSTAS_SAUDACAO
+        assert "potato-claw" in resultado.lower()
 
     def test_nao_saudacao(self):
         assert verificar_ferramenta_saudacao("crie um script python") is None
+
+    @pytest.mark.parametrize("entrada", [
+        "beleza e você?", "como você se chama?", "qual seu nome?", "tudo bem com você?",
+    ])
+    def test_pergunta_nao_e_saudacao_pura(self, entrada):
+        # Perguntas reais NAO devem virar resposta rapida; caem pro LLM.
+        assert verificar_ferramenta_saudacao(entrada) is None
 
 
 class TestExecutarFerramentas:

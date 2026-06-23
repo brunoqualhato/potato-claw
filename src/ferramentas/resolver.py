@@ -4,16 +4,16 @@ O LLM só interpreta o resultado — não faz o cálculo.
 """
 
 import ast
-import operator
-import re
 import math
+import operator
+import random
+import re
 import shlex
 import subprocess
-from pathlib import Path
 from datetime import datetime
+from pathlib import Path
 
 from src.core.config import BASE_DIR
-
 
 TIMEOUT_COMANDO_S = 20
 MAX_SAIDA_CHARS = 4000
@@ -484,17 +484,31 @@ def verificar_ferramenta_calculo(texto: str) -> str | None:
     return None
 
 
+# Respostas calorosas e variadas para saudacoes puras (com identidade).
+# Variar evita a sensacao robotica de repetir sempre a mesma frase.
+_RESPOSTAS_SAUDACAO = (
+    "Opa! Aqui é o potato-claw 🥔. No que posso te ajudar?",
+    "E aí! 🥔 Sou o potato-claw, seu assistente local. Manda o que precisa.",
+    "Oi! 🥔 potato-claw na área. Como posso ajudar hoje?",
+    "Olá! Sou o potato-claw, rodando aqui na sua máquina. Em que ajudo?",
+)
+
+# So estas formas EXATAS contam como saudacao pura (resposta rapida sem LLM).
+# Qualquer coisa alem disso (ex.: "beleza e você?", "como você se chama?")
+# retorna None e segue pro LLM, que responde com identidade e contexto.
+_SAUDACOES_PURAS = frozenset({
+    "oi", "olá", "ola", "e ai", "e aí", "eai", "opa",
+    "bom dia", "boa tarde", "boa noite", "hello", "hey", "ola!", "oi!",
+})
+
+
 def verificar_ferramenta_saudacao(texto: str) -> str | None:
-    """Responde saudações curtas de forma determinística."""
+    """Responde saudações curtas e puras de forma rápida (sem LLM), variando o
+    texto e com identidade. Retorna None para qualquer coisa que não seja uma
+    saudação pura, para a mensagem cair no LLM com contexto."""
     base = texto.strip().lower()
-    saudacoes = {
-        "oi", "olá", "ola", "e ai", "e aí", "bom dia", "boa tarde", "boa noite", "hello", "hey"
-    }
-    if base in saudacoes:
-        return (
-            "Olá! Estou pronto para ajudar. "
-            "Você pode pedir código, análise, leitura/criação de arquivos e execução de comandos locais."
-        )
+    if base in _SAUDACOES_PURAS:
+        return random.choice(_RESPOSTAS_SAUDACAO)
     return None
 
 
