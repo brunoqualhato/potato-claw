@@ -49,7 +49,7 @@ TEMPLATES: list[TemplateProjeto] = [
             "cli", "terminal", "menu", "interativo", "lista", "contato", "tarefa",
             "todo", "cadastro", "gerenciador", "calculadora", "conversor", "jogo",
             "quiz", "agenda", "inventário", "estoque", "registro", "controle",
-            "sistema", "ferramenta", "utilitário", "app", "aplicativo",
+            "sistema", "ferramenta", "utilitário", "aplicativo", "python",
             "galeria", "fotos", "foto", "álbum", "imagem", "imagens",
             "notas", "nota", "diário", "receita", "receitas", "biblioteca",
             "catálogo", "catalogo", "organizador", "player", "música",
@@ -121,35 +121,270 @@ TEMPLATES: list[TemplateProjeto] = [
     ),
     TemplateProjeto(
         nome="cli_node",
-        palavras_chave=["node", "nodejs", "javascript", "npm"],
+        palavras_chave=[
+            "node", "nodejs", "javascript", "npm", "js",
+            "cli em javascript", "cli em node", "terminal node",
+            "app node", "app javascript", "app js",
+        ],
         stack="Node.js",
         steps=[
             TemplateStep("Manifesto do projeto", "package.json"),
             TemplateStep("Módulos de lógica de negócio", "src/models.js"),
-            TemplateStep("Persistência de dados", "src/storage.js"),
-            TemplateStep("CLI interativa com readline/inquirer", "index.js", ["src/models.js", "src/storage.js"]),
+            TemplateStep("Persistência de dados (JSON file)", "src/storage.js"),
+            TemplateStep("CLI interativa com readline", "index.js", ["src/models.js", "src/storage.js"]),
             TemplateStep("Documentação com instruções", "README.md"),
         ],
         esqueletos={
+            "package.json": (
+                '{\n'
+                '  "name": "meu-projeto",\n'
+                '  "version": "1.0.0",\n'
+                '  "main": "index.js",\n'
+                '  "scripts": {\n'
+                '    "start": "node index.js"\n'
+                '  },\n'
+                '  "dependencies": {}\n'
+                '}\n'
+            ),
             "index.js": (
                 "#!/usr/bin/env node\n"
+                "'use strict';\n\n"
                 "const readline = require('readline');\n"
-                "// Menu interativo com rl.question()\n"
-                "// Loop principal com opções numeradas\n"
+                "const { /* imports */ } = require('./src/models');\n"
+                "const storage = require('./src/storage');\n\n"
+                "const rl = readline.createInterface({\n"
+                "  input: process.stdin,\n"
+                "  output: process.stdout\n"
+                "});\n\n"
+                "function menu() {\n"
+                "  console.log('\\n=== Menu ===');\n"
+                "  console.log('1. ...');\n"
+                "  console.log('0. Sair');\n"
+                "  rl.question('Opção: ', (opcao) => {\n"
+                "    if (opcao === '0') { rl.close(); return; }\n"
+                "    // processar opção\n"
+                "    menu(); // loop\n"
+                "  });\n"
+                "}\n\n"
+                "menu();\n"
+            ),
+            "src/storage.js": (
+                "const fs = require('fs');\n"
+                "const path = require('path');\n\n"
+                "const DATA_FILE = path.join(__dirname, '..', 'data.json');\n\n"
+                "function carregar() {\n"
+                "  if (!fs.existsSync(DATA_FILE)) return [];\n"
+                "  return JSON.parse(fs.readFileSync(DATA_FILE, 'utf-8'));\n"
+                "}\n\n"
+                "function salvar(dados) {\n"
+                "  fs.writeFileSync(DATA_FILE, JSON.stringify(dados, null, 2));\n"
+                "}\n\n"
+                "module.exports = { carregar, salvar };\n"
+            ),
+        },
+    ),
+    TemplateProjeto(
+        nome="api_express",
+        palavras_chave=[
+            "express", "api node", "api javascript", "api js", "backend node",
+            "rest node", "rest javascript", "servidor node", "servidor js",
+            "node", "nodejs", "api", "rest",
+        ],
+        stack="Node.js + Express",
+        steps=[
+            TemplateStep("Manifesto do projeto com dependências", "package.json"),
+            TemplateStep("Modelos de dados e validação", "src/models.js"),
+            TemplateStep("Lógica de negócio e persistência", "src/services.js", ["src/models.js"]),
+            TemplateStep("Rotas/endpoints da API", "src/routes.js", ["src/services.js"]),
+            TemplateStep("Servidor Express com startup", "index.js", ["src/routes.js"]),
+            TemplateStep("Documentação com exemplos curl", "README.md"),
+        ],
+        esqueletos={
+            "package.json": (
+                '{\n'
+                '  "name": "meu-api",\n'
+                '  "version": "1.0.0",\n'
+                '  "main": "index.js",\n'
+                '  "scripts": {\n'
+                '    "start": "node index.js",\n'
+                '    "dev": "node --watch index.js"\n'
+                '  },\n'
+                '  "dependencies": {\n'
+                '    "express": "^4.18.0"\n'
+                '  }\n'
+                '}\n'
+            ),
+            "index.js": (
+                "const express = require('express');\n"
+                "const routes = require('./src/routes');\n\n"
+                "const app = express();\n"
+                "app.use(express.json());\n"
+                "app.use('/api', routes);\n\n"
+                "const PORT = process.env.PORT || 3000;\n"
+                "app.listen(PORT, () => {\n"
+                "  console.log(`Servidor rodando em http://localhost:${PORT}`);\n"
+                "});\n"
+            ),
+        },
+    ),
+    TemplateProjeto(
+        nome="react_app",
+        palavras_chave=[
+            "react", "frontend react", "spa", "single page", "vite",
+            "componente react", "interface react", "tela react",
+        ],
+        stack="React + Vite",
+        steps=[
+            TemplateStep("Manifesto do projeto", "package.json"),
+            TemplateStep("Configuração Vite", "vite.config.js"),
+            TemplateStep("HTML base", "index.html"),
+            TemplateStep("Componente principal App", "src/App.jsx", ["src/components/"]),
+            TemplateStep("Entry point React", "src/main.jsx"),
+            TemplateStep("Estilos CSS", "src/App.css"),
+            TemplateStep("Documentação com instruções", "README.md"),
+        ],
+        esqueletos={
+            "package.json": (
+                '{\n'
+                '  "name": "meu-react-app",\n'
+                '  "version": "1.0.0",\n'
+                '  "scripts": {\n'
+                '    "dev": "vite",\n'
+                '    "build": "vite build"\n'
+                '  },\n'
+                '  "dependencies": {\n'
+                '    "react": "^18.2.0",\n'
+                '    "react-dom": "^18.2.0"\n'
+                '  },\n'
+                '  "devDependencies": {\n'
+                '    "vite": "^5.0.0",\n'
+                '    "@vitejs/plugin-react": "^4.0.0"\n'
+                '  }\n'
+                '}\n'
+            ),
+            "src/main.jsx": (
+                "import React from 'react';\n"
+                "import ReactDOM from 'react-dom/client';\n"
+                "import App from './App';\n"
+                "import './App.css';\n\n"
+                "ReactDOM.createRoot(document.getElementById('root')).render(\n"
+                "  <React.StrictMode>\n"
+                "    <App />\n"
+                "  </React.StrictMode>\n"
+                ");\n"
+            ),
+        },
+    ),
+    TemplateProjeto(
+        nome="typescript_cli",
+        palavras_chave=[
+            "typescript", "ts", "cli typescript", "cli ts",
+        ],
+        stack="TypeScript + Node.js",
+        steps=[
+            TemplateStep("Manifesto do projeto", "package.json"),
+            TemplateStep("Configuração TypeScript", "tsconfig.json"),
+            TemplateStep("Módulos de lógica de negócio", "src/models.ts"),
+            TemplateStep("Persistência de dados", "src/storage.ts", ["src/models.ts"]),
+            TemplateStep("CLI interativa com readline", "src/index.ts", ["src/models.ts", "src/storage.ts"]),
+            TemplateStep("Documentação com instruções", "README.md"),
+        ],
+        esqueletos={
+            "package.json": (
+                '{\n'
+                '  "name": "meu-projeto-ts",\n'
+                '  "version": "1.0.0",\n'
+                '  "scripts": {\n'
+                '    "build": "tsc",\n'
+                '    "start": "node dist/index.js",\n'
+                '    "dev": "ts-node src/index.ts"\n'
+                '  },\n'
+                '  "dependencies": {},\n'
+                '  "devDependencies": {\n'
+                '    "typescript": "^5.0.0",\n'
+                '    "ts-node": "^10.9.0",\n'
+                '    "@types/node": "^20.0.0"\n'
+                '  }\n'
+                '}\n'
+            ),
+            "tsconfig.json": (
+                '{\n'
+                '  "compilerOptions": {\n'
+                '    "target": "ES2020",\n'
+                '    "module": "commonjs",\n'
+                '    "outDir": "./dist",\n'
+                '    "rootDir": "./src",\n'
+                '    "strict": true,\n'
+                '    "esModuleInterop": true\n'
+                '  },\n'
+                '  "include": ["src/**/*"]\n'
+                '}\n'
+            ),
+        },
+    ),
+    TemplateProjeto(
+        nome="next_app",
+        palavras_chave=[
+            "next", "nextjs", "next.js", "ssr", "fullstack react",
+            "fullstack javascript", "fullstack js",
+        ],
+        stack="Next.js",
+        steps=[
+            TemplateStep("Manifesto do projeto", "package.json"),
+            TemplateStep("Configuração Next.js", "next.config.js"),
+            TemplateStep("Layout principal", "app/layout.jsx"),
+            TemplateStep("Página principal", "app/page.jsx", ["app/layout.jsx"]),
+            TemplateStep("Rota API (se necessário)", "app/api/route.js"),
+            TemplateStep("Estilos globais", "app/globals.css"),
+            TemplateStep("Documentação com instruções", "README.md"),
+        ],
+        esqueletos={
+            "package.json": (
+                '{\n'
+                '  "name": "meu-next-app",\n'
+                '  "version": "1.0.0",\n'
+                '  "scripts": {\n'
+                '    "dev": "next dev",\n'
+                '    "build": "next build",\n'
+                '    "start": "next start"\n'
+                '  },\n'
+                '  "dependencies": {\n'
+                '    "next": "^14.0.0",\n'
+                '    "react": "^18.2.0",\n'
+                '    "react-dom": "^18.2.0"\n'
+                '  }\n'
+                '}\n'
             ),
         },
     ),
     TemplateProjeto(
         nome="fullstack_simples",
-        palavras_chave=["fullstack", "frontend", "html", "tela", "interface", "formulário", "dashboard"],
+        palavras_chave=[
+            "fullstack", "frontend", "html", "tela", "interface web",
+            "formulário", "dashboard", "painel", "página web",
+            "site simples", "landing", "webapp",
+        ],
         stack="Python + HTML",
         steps=[
             TemplateStep("Arquivo de dependências", "requirements.txt"),
-            TemplateStep("Backend com Flask/FastAPI servindo HTML", "app.py"),
+            TemplateStep("Backend com Flask servindo HTML", "app.py"),
             TemplateStep("Template HTML principal", "templates/index.html", ["app.py"]),
             TemplateStep("Estilos CSS", "static/style.css"),
+            TemplateStep("JavaScript do frontend (interatividade)", "static/script.js"),
             TemplateStep("Documentação com instruções", "README.md"),
         ],
+        esqueletos={
+            "requirements.txt": "flask>=3.0\n",
+            "app.py": (
+                "from flask import Flask, render_template, request, jsonify\n\n"
+                "app = Flask(__name__)\n\n"
+                "@app.route('/')\n"
+                "def index():\n"
+                "    return render_template('index.html')\n\n"
+                "if __name__ == '__main__':\n"
+                "    app.run(debug=True, port=5000)\n"
+            ),
+        },
     ),
 ]
 
@@ -162,16 +397,32 @@ def selecionar_template(objetivo: str) -> TemplateProjeto | None:
     """
     Seleciona o template mais adequado baseado no objetivo.
     Retorna None se nenhum template é confiável o suficiente.
+
+    Lógica de prioridade:
+    - Keywords de stack/framework (node, react, express, typescript) têm peso 3
+    - Keywords genéricas (app, sistema, lista) têm peso 2
+    - Match parcial tem peso 1
     """
     objetivo_lower = objetivo.lower()
     pontuacoes: list[tuple[TemplateProjeto, int]] = []
+
+    # Keywords que indicam stack explicitamente — dá prioridade
+    _STACK_KEYWORDS = {
+        "node", "nodejs", "javascript", "js", "npm",
+        "react", "vite", "next", "nextjs", "next.js",
+        "express", "typescript", "ts",
+        "flask", "fastapi", "django",
+        "python", "py",
+    }
 
     for template in TEMPLATES:
         score = 0
         for kw in template.palavras_chave:
             if kw in objetivo_lower:
-                score += 2
-            # Match parcial
+                # Keywords de stack/framework têm peso dominante
+                peso = 5 if kw in _STACK_KEYWORDS else 2
+                score += peso
+            # Match parcial (keyword dentro de uma palavra)
             elif any(kw in palavra for palavra in objetivo_lower.split()):
                 score += 1
         if score > 0:
@@ -183,11 +434,7 @@ def selecionar_template(objetivo: str) -> TemplateProjeto | None:
     pontuacoes.sort(key=lambda x: x[1], reverse=True)
     melhor, melhor_score = pontuacoes[0]
 
-    # Só retorna se confiança mínima (pelo menos 2 keywords bateram)
-    if melhor_score >= 4:
-        return melhor
-
-    # Score 2-3: retorna mas pode ser overridden pelo LLM
+    # Só retorna se confiança mínima
     if melhor_score >= 2:
         return melhor
 
