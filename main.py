@@ -432,10 +432,25 @@ def main():
     parser.add_argument("--agente", "-a", type=str, help="Forçar agente específico")
     parser.add_argument("--nivel", "-n", type=int, choices=[1, 2, 3], help="Forçar nível")
     parser.add_argument("--debug", action="store_true", help="Ativar logging DEBUG")
+    parser.add_argument("--serve", action="store_true",
+                        help="Modo servidor: sobe os canais configurados (Telegram etc) e fica no ar")
     args = parser.parse_args()
 
     # Configura logging antes de qualquer outra coisa
     setup_logging(force_level="DEBUG" if args.debug else None)
+
+    # ─── Modo servidor de canais (sempre no ar) ───
+    if args.serve:
+        import asyncio
+
+        from src.conexoes.servidor import servir
+        if args.nivel:
+            console.print("[dim]Nivel forcado nao se aplica ao modo servidor[/dim]")
+        try:
+            asyncio.run(servir())
+        except KeyboardInterrupt:
+            console.print("\n[dim]👋 Servidor encerrado.[/dim]")
+        return
 
     # ─── Modo batch ───
     if args.query:

@@ -84,6 +84,16 @@ PERFIS = {
 # Modelos ativos (baseado no perfil selecionado)
 MODELOS = PERFIS[PERFIL_ATIVO]
 
+# Override opcional: forca um unico modelo em todos os papeis de chat (mantem o
+# embedding). Util para hardware com um modelo so ou para testes rapidos.
+# Ex.: NEURON_MODELO_UNICO=qwen2.5:0.5b
+_MODELO_UNICO = os.environ.get("NEURON_MODELO_UNICO")
+if _MODELO_UNICO:
+    MODELOS = {
+        papel: (modelo if papel == "embedding" else _MODELO_UNICO)
+        for papel, modelo in MODELOS.items()
+    }
+
 # ══════════════════════════════════════════════════════════════
 # NÍVEIS DE PERFORMANCE
 # ══════════════════════════════════════════════════════════════
@@ -266,6 +276,28 @@ AGENTES = {
         "nivel_preferido": 3,
     },
 }
+
+# ══════════════════════════════════════════════════════════════
+# CANAIS (hub de conexoes) - opt-in via env, offline-first
+# ══════════════════════════════════════════════════════════════
+
+def canais_configurados() -> list[dict]:
+    """Canais habilitados via variaveis de ambiente.
+
+    Sem nenhuma var definida, retorna [] (modo offline puro: so CLI).
+    Exemplo: TELEGRAM_BOT_TOKEN=123:abc TELEGRAM_ALLOW_LIST=111,222
+    """
+    canais: list[dict] = []
+    tg_token = os.environ.get("TELEGRAM_BOT_TOKEN")
+    if tg_token:
+        allow = os.environ.get("TELEGRAM_ALLOW_LIST", "")
+        canais.append({
+            "tipo": "telegram",
+            "token": tg_token,
+            "allow_list": [x.strip() for x in allow.split(",") if x.strip()],
+        })
+    return canais
+
 
 # ══════════════════════════════════════════════════════════════
 # MEMÓRIA E CONTEXTO
