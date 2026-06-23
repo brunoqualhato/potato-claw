@@ -4,3 +4,6 @@
 pytest>=8.0,<10.0
 pytest-mock>=3.12,<4.0
 ruff>=0.4,<1.0
+
+# Opcional: provider litellm (desligado por padrão; instale só se for usar)
+# litellm>=1.0,<2.0
