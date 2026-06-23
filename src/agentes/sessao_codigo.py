@@ -1142,7 +1142,7 @@ def _validar_integracao(sessao: SessaoCodigo, step: StepPlano, codigo: str) -> l
         deps_listadas = [
             line.split("==")[0].split(">=")[0].split("<=")[0].strip().lower()
             for line in codigo.split("\n")
-            if line.strip() and not line.startswith("#")
+            if line.strip() and not line.strip().startswith("#")
         ]
         # Verifica se cada dep é usada em algum arquivo do projeto
         for dep in deps_listadas:
