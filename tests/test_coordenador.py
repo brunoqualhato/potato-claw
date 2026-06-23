@@ -1,9 +1,10 @@
 """Testes para o coordenador de roteamento por palavras-chave."""
 
 import pytest
+
 from src.agentes.coordenador import (
-    rotear_por_palavras_chave,
     _baixo_sinal,
+    rotear_por_palavras_chave,
     validar_prompt,
 )
 

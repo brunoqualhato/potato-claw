@@ -13,7 +13,6 @@ import re
 from src.core.config import AGENTES
 from src.core.utils import normalizar
 
-
 STOPWORDS_CURTAS = {
     "oi", "olá", "ola", "hello", "hey", "blz", "ok", "sim", "não", "nao", "valeu", "obrigado",
 }

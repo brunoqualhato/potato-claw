@@ -1,7 +1,6 @@
 """Testes para o pipeline de web RAG (Search → Fetch → Convert → Extract)."""
 
-import pytest
-from src.ferramentas.web_rag import html_para_markdown, ResultadoBusca
+from src.ferramentas.web_rag import ResultadoBusca, html_para_markdown
 
 
 class TestHTMLParaMarkdown:

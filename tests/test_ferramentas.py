@@ -1,12 +1,13 @@
 """Testes para as ferramentas de execução pré-LLM."""
 
 import pytest
+
 from src.ferramentas.resolver import (
     calcular,
-    verificar_ferramenta_data,
-    verificar_ferramenta_calculo,
-    verificar_ferramenta_saudacao,
     executar_ferramentas,
+    verificar_ferramenta_calculo,
+    verificar_ferramenta_data,
+    verificar_ferramenta_saudacao,
 )
 
 

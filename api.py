@@ -16,12 +16,11 @@ import threading
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
-from fastapi import FastAPI, HTTPException, Depends, Security
+from fastapi import Depends, FastAPI, HTTPException, Security
 from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, Field
 
 from src.agentes.executor import SistemaAgentes
-
 
 # ══════════════════════════════════════════════════════════════
 # AUTENTICAÇÃO

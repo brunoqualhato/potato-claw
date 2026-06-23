@@ -3,9 +3,9 @@ Testes de integração para o pipeline principal (executor).
 Usa mocks do Ollama para testar o fluxo end-to-end sem GPU.
 """
 
-import tempfile
+from unittest.mock import MagicMock, patch
+
 import pytest
-from unittest.mock import patch, MagicMock
 
 from src.agentes.executor import SistemaAgentes
 from src.memoria.cache import Cache
@@ -41,7 +41,10 @@ class TestPipelineNivel1:
         """Cálculo resolve no nível 1 sem chamar LLM principal."""
         mock_ollama.chat.return_value = {
             "message": {
-                "content": '{"agente":"generalista","precisa_web":false,"ferramenta":"calculo","parametros":{"expressao":"2+2"}}'
+                "content": (
+                    '{"agente":"generalista","precisa_web":false,'
+                    '"ferramenta":"calculo","parametros":{"expressao":"2+2"}}'
+                )
             }
         }
 
@@ -161,7 +164,9 @@ class TestPipelineNivel3:
 
         # Força nível 3 para ir direto ao pipeline profundo
         sistema_mock.forcar_nivel(3)
-        resultado = sistema_mock.executar("generalista", "crie uma API REST com autenticação JWT em Python usando FastAPI")
+        resultado = sistema_mock.executar(
+            "generalista", "crie uma API REST com autenticação JWT em Python usando FastAPI"
+        )
         assert "FastAPI" in resultado or "API" in resultado
 
 
