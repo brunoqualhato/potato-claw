@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import ast
 import json
+import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -893,20 +894,51 @@ def _exportar_disco(sessao: SessaoCodigo, diretorio: str | None = None) -> Path:
     return base
 
 
+# Tags de linguagem reconhecidas na cerca (usadas só no caso de cerca aberta
+# sem fechamento, para descartar a tag sem comer a 1a linha de código).
+_LANGS_CERCA = {
+    "python", "py", "python3", "javascript", "js", "jsx", "typescript", "ts",
+    "tsx", "php", "go", "golang", "rust", "rs", "java", "sql", "bash", "sh",
+    "shell", "zsh", "yaml", "yml", "json", "toml", "html", "css", "scss",
+    "c", "cpp", "csharp", "cs", "ruby", "rb", "kotlin", "kt", "swift",
+    "dockerfile", "make", "makefile", "ini", "xml", "markdown", "md", "text", "txt",
+}
+
+# Bloco cercado por ``` com tag opcional na própria cerca; conteúdo (grupo 2)
+# vai até o ``` de fechamento. Separar a tag aqui evita comer a 1a linha de código.
+_CERCA_RE = re.compile(r"```[ \t]*([^\n`]*)\r?\n(.*?)```", re.DOTALL)
+
+
 def _extrair_codigo(texto: str) -> str:
-    """Extrai bloco de código de markdown."""
-    if "```" in texto:
-        blocos = texto.split("```")
-        if len(blocos) >= 3:
-            bloco = blocos[1]
-            if "\n" in bloco:
-                primeira = bloco.split("\n", 1)[0].strip().lower()
-                langs = {"python", "py", "javascript", "js", "typescript", "ts",
-                         "php", "go", "rust", "java", "sql", "bash", "sh", "yaml", "json", "toml"}
-                if primeira in langs or (primeira.isalpha() and len(primeira) <= 12):
-                    bloco = bloco.split("\n", 1)[1]
-            return bloco.strip()
-    return texto.strip()
+    """
+    Extrai o código de uma resposta de LLM de forma tolerante a modelos
+    pequenos, que erram a formatação dos blocos com frequência.
+
+    Estratégia:
+      1. Captura todos os blocos ```...``` fechados e escolhe o MAIOR
+         (o código real costuma ser o maior; exemplos curtos na explicação
+         ficam de fora). A versão anterior pegava sempre o primeiro bloco.
+      2. Trata cerca ABERTA sem fechamento (modelo esqueceu o ``` final).
+      3. Descarta a tag de linguagem sem comer a primeira linha de código.
+      4. Sem nenhuma cerca, devolve o texto cru (assume código puro).
+    """
+    if "```" not in texto:
+        return texto.strip()
+
+    # 1. Blocos fechados -> escolhe o de maior conteúdo.
+    blocos = _CERCA_RE.findall(texto)
+    if blocos:
+        _tag, conteudo = max(blocos, key=lambda par: len(par[1]))
+        return conteudo.strip()
+
+    # 2. Cerca aberta sem fechar: do primeiro ``` até o fim.
+    resto = texto.split("```", 1)[1]
+    primeira, sep, corpo = resto.partition("\n")
+    # 3. Remove a tag de linguagem apenas se a 1a linha for de fato uma tag.
+    if sep and primeira.strip().lower() in _LANGS_CERCA:
+        resto = corpo
+    # Remove um eventual fence de fechamento perdido no meio.
+    return resto.split("```", 1)[0].strip()
 
 
 def _parse_plano(objetivo: str, raw: str) -> SessaoCodigo:
