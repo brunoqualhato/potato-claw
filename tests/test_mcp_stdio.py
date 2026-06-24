@@ -1,5 +1,6 @@
 import io
 import json
+
 from src.extensoes.mcp.stdio import StdioTransport
 
 

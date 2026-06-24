@@ -1,4 +1,5 @@
 import pytest
+
 from src.extensoes.skills.creator import criar_skill
 from src.extensoes.skills.loader import carregar_skills
 

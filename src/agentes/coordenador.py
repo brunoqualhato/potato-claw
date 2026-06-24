@@ -13,7 +13,6 @@ import re
 from src.core.config import AGENTES
 from src.core.utils import normalizar
 
-
 STOPWORDS_CURTAS = {
     "oi", "olá", "ola", "hello", "hey", "blz", "ok", "sim", "não", "nao", "valeu", "obrigado",
 }
@@ -102,6 +101,9 @@ def validar_prompt(texto: str) -> tuple[bool, str]:
 
     if not texto_limpo:
         return False, "Sua mensagem veio vazia. Envie uma pergunta com mais contexto."
+
+    if normalizar(texto_limpo) in SAUDACOES_CURTAS:
+        return True, ""
 
     if len(texto_limpo) < 3:
         return False, "A mensagem está curta demais para roteamento. Descreva melhor sua tarefa."

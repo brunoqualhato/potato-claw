@@ -4,11 +4,11 @@ Hash da pergunta → resposta instantânea.
 Eviction policy: máximo 500 entradas, remove as menos usadas.
 """
 
-import json
 import hashlib
+import json
 import logging
-from pathlib import Path
 from datetime import datetime
+from pathlib import Path
 
 from src.core.config import CACHE_ARQUIVO, CACHE_HABILITADO
 
@@ -74,6 +74,15 @@ class Cache:
     def _nao_cachear_consulta(cls, pergunta: str) -> bool:
         base = cls._consulta_base(pergunta)
         if not base:
+            return True
+        termos_temporais = {
+            "hoje", "agora", "atual", "atuais", "recente", "recentes",
+            "último", "ultima", "última", "latest", "cotação", "preço",
+            "clima", "temperatura", "placar", "resultado", "versão", "versao",
+            "release", "lançamento", "lancamento", "notícia", "noticia",
+            "dólar", "dolar", "euro", "bitcoin", "câmbio", "cambio",
+        }
+        if any(termo in base for termo in termos_temporais):
             return True
         tokens = base.split()
         if len(tokens) <= 2:

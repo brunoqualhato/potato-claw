@@ -1,7 +1,7 @@
 from src.extensoes.skills.loader import (
+    _parse_frontmatter,
     carregar_skills,
     resumo_skills,
-    _parse_frontmatter,
 )
 
 

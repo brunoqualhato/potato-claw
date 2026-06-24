@@ -6,6 +6,7 @@ import time
 import ollama
 from rich.console import Console
 
+from src.core.config import NUM_THREAD, OLLAMA_TIMEOUT
 from src.provedores.base import LLMProvider, RespostaLLM
 
 console = Console()
@@ -35,12 +36,17 @@ class OllamaProvider(LLMProvider):
         options: dict = {"temperature": temperatura, "num_predict": max_tokens}
         if num_ctx is not None:
             options["num_ctx"] = num_ctx
-        if num_thread is not None:
-            options["num_thread"] = num_thread
+        # Tuning para PC fraco: aplica NUM_THREAD por padrao (deixa 1 nucleo livre
+        # ao SO) quando o caller nao especifica, preservando o comportamento antigo.
+        options["num_thread"] = num_thread if num_thread is not None else NUM_THREAD
 
         extra: dict = {}
         if keep_alive is not None:
             extra["keep_alive"] = keep_alive
+
+        # Timeout duro: evita que a chamada fique pendurada sob pressao de RAM
+        # (antes o parametro timeout era ignorado, uma regressao operacional).
+        client = ollama.Client(timeout=timeout if timeout is not None else OLLAMA_TIMEOUT)
 
         inicio = time.time()
         resposta = ""
@@ -49,7 +55,7 @@ class OllamaProvider(LLMProvider):
 
         try:
             if stream:
-                for chunk in ollama.chat(
+                for chunk in client.chat(
                     model=modelo, messages=msgs, stream=True, options=options, **extra
                 ):
                     texto = chunk["message"]["content"]
@@ -64,7 +70,7 @@ class OllamaProvider(LLMProvider):
                         break
                 console.print()
             else:
-                r = ollama.chat(model=modelo, messages=msgs, options=options, **extra)
+                r = client.chat(model=modelo, messages=msgs, options=options, **extra)
                 resposta = r["message"]["content"]
                 tokens_in = r.get("prompt_eval_count", 0)
                 tokens_out = r.get("eval_count", 0)

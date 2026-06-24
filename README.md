@@ -1,4 +1,9 @@
-# � Potato-Claw
+# 🥔 Potato-Claw
+
+[![CI](https://github.com/brunoqualhato/potato-claw/actions/workflows/ci.yml/badge.svg)](https://github.com/brunoqualhato/potato-claw/actions/workflows/ci.yml)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](https://opensource.org/licenses/MIT)
+[![Ollama](https://img.shields.io/badge/LLM-Ollama-purple.svg)](https://ollama.com/)
 
 Sistema multiagente local em Python com execução em **3 níveis de performance**, memória persistente e pesquisa web com grounding.
 Inspirado na ideia de agentes inteligentes como o OpenClaw, mas projetado para rodar em **batatas** — Mac M1 com 8GB de RAM, laptops modestos, hardware limitado.
@@ -7,7 +12,9 @@ Inspirado na ideia de agentes inteligentes como o OpenClaw, mas projetado para r
 
 ## O que o projeto faz
 
-O Potato-Claw recebe uma pergunta, analisa a intenção com uma LLM coordenadora e decide entre:
+O Potato-Claw recebe uma pergunta e tenta primeiro os caminhos mais baratos. Só
+carrega a LLM coordenadora quando ferramentas determinísticas e cache não resolvem.
+O sistema decide entre:
 
 - responder com **ferramentas locais** sem chamar LLM;
 - usar um **modelo rápido** com contexto curto;
@@ -28,22 +35,27 @@ Além do modo de chat, o projeto também inclui:
 ```text
 Pergunta do usuário
         │
+        ├── ferramenta determinística → resposta sem modelo
+        ├── cache exato               → resposta sem modelo
         ▼
-Analisador de intenção (format=json, few-shot dinâmico)
+Roteamento local por confiança
         │
-        ├── ferramenta local → src/ferramentas/resolver.py
+        ▼
+Analisador de intenção (somente quando necessário)
+        │
         ├── nível 2 rápido   → modelo leve + contexto curto + self-correction
         └── nível 3 profundo → web RAG + ChromaDB + modelo profundo
 ```
 
 O pipeline principal vive em `src/agentes/executor.py` e orquestra:
 
-1. análise de intenção (com few-shot dinâmico via ChromaDB);
-2. tentativa de resolução por ferramenta;
-3. cache exato;
-4. recuperação semântica via ChromaDB;
-5. self-correction antes de promover nível;
-6. chamada ao LLM rápido ou profundo.
+1. resolução determinística por ferramenta;
+2. cache exato, exceto para consultas temporais;
+3. roteamento local por palavras-chave;
+4. análise de intenção, quando necessária;
+5. recuperação semântica por coleções separadas no ChromaDB;
+6. self-correction antes de promover nível;
+7. chamada ao LLM rápido ou profundo.
 
 ## Estrutura do projeto
 
@@ -148,6 +160,9 @@ Variáveis importantes:
 - `NEURON_API_KEY` — autenticação da API HTTP (vazio = acesso livre)
 - `NEURON_LOG_LEVEL` — nível de log (DEBUG/INFO/WARNING/ERROR)
 - `NEURON_DEBUG` — atalho para DEBUG (true/false)
+- `NEURON_WARMUP_HABILITADO` — aquece modelos no boot; desativado por padrão
+- `NEURON_WARMUP_MODELOS` — funções aquecidas, por exemplo `rapido,embedding`
+- `NEURON_AUTO_APROVAR_ACOES_LOCAIS` — desativa confirmação de ações mutáveis
 
 ## Como executar
 
@@ -174,7 +189,7 @@ python main.py --agente programador --nivel 3 --query "crie uma API REST com JWT
 ### API HTTP
 
 ```bash
-pip install fastapi uvicorn
+pip install -r requirements-api.txt
 uvicorn api:app --host 0.0.0.0 --port 8000
 ```
 
@@ -186,6 +201,34 @@ curl -X POST http://localhost:8000/chat \
   -H "X-API-Key: sua-chave" \
   -d '{"pergunta":"quanto é 15% de 300"}'
 ```
+
+A resposta inclui `agente`, `nivel` e `fonte` realmente usados pelo pipeline.
+
+### Docker
+
+```bash
+docker build -t potato-claw .
+docker run --rm -p 8000:8000 \
+  --add-host host.docker.internal:host-gateway \
+  -e OLLAMA_HOST=http://host.docker.internal:11434 \
+  potato-claw
+```
+
+O container inicia a API HTTP na porta `8000` e conecta ao Ollama executado no host.
+
+## Segurança de ações locais
+
+Criação/sobrescrita de arquivos e execução de comandos exigem confirmação:
+
+```text
+criar arquivo notas.txt ::: conteúdo
+# Potato-Claw pede confirmação
+
+confirmar: criar arquivo notas.txt ::: conteúdo
+```
+
+Essa proteção pode ser desativada apenas em ambientes controlados com
+`NEURON_AUTO_APROVAR_ACOES_LOCAIS=true`.
 
 ## Comandos da CLI
 
@@ -221,10 +264,17 @@ O Potato-Claw implementa várias técnicas para extrair máxima qualidade de mod
 - **Few-shot dinâmico** — seleciona exemplos relevantes do histórico via ChromaDB
 - **Self-correction loop** — tenta corrigir respostas fracas antes de promover nível
 - **Template library** — esqueletos pré-definidos reduzem carga cognitiva do modelo
-- **Warm-up keep-alive** — pré-carrega modelos na RAM ao iniciar
+- **Warm-up seletivo** — opcional e limitado aos modelos escolhidos
 - **Stream abort** — detecta degeneração (repetição) e para imediatamente
 - **Feedback → memória** — preferências do usuário melhoram respostas futuras
 - **Prompts compactos** — ~300 tokens liberando espaço para contexto real
+- **Métricas p50/p95** — latência e tokens por nível e fonte
+- **Memória isolada** — conversas, conhecimento, preferências, intenções e código
+  usam coleções vetoriais separadas
+- **Smoke checks de projeto** — `compileall`, validação de `package.json` e
+  `node --check` antes da exportação
+- **Scaffold offline** — quando Ollama está fora do ar, templates locais ainda
+  produzem uma base sintaticamente válida
 
 ## Testes
 

@@ -22,6 +22,10 @@ from __future__ import annotations
 import ast
 import json
 import re
+import shutil
+import subprocess
+import sys
+import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -31,9 +35,9 @@ import ollama
 from rich.console import Console
 from rich.panel import Panel
 
-from src.core.config import MODELOS, DATA_DIR
+from src.agentes.templates import obter_esqueleto, selecionar_template
+from src.core.config import DATA_DIR, MODELOS
 from src.memoria.semantica import MemoriaSemantica
-from src.agentes.templates import selecionar_template, obter_esqueleto
 
 console = Console()
 
@@ -78,6 +82,7 @@ class SessaoCodigo:
     inicio: float = field(default_factory=time.time)
     tempo_total_ms: int = 0
     interativo: bool = False  # [2] Feedback mid-session
+    projeto_validado: bool | None = None
 
     @property
     def progresso(self) -> str:
@@ -87,7 +92,11 @@ class SessaoCodigo:
 
     @property
     def concluida(self) -> bool:
-        return all(s.concluido or s.pulado for s in self.plano)
+        return (
+            bool(self.plano)
+            and all(s.concluido or s.pulado for s in self.plano)
+            and self.projeto_validado is not False
+        )
 
     def step_pendente(self) -> Optional[StepPlano]:
         for step in self.plano:
@@ -154,14 +163,38 @@ class SessaoCodigo:
         if eh_ponto_entrada and self.scratchpad:
             modulos_existentes = [
                 f for f in self.scratchpad.keys()
-                if f != step.arquivo and not f.endswith((".md", ".txt", ".json"))
+                if f != step.arquivo and not f.endswith((".md", ".txt", ".json", ".css"))
             ]
             if modulos_existentes:
+                # Extrai assinaturas dos módulos para o LLM saber o que importar
+                assinaturas = []
+                for mod in modulos_existentes:
+                    codigo_mod = self.scratchpad[mod]
+                    sigs = _truncar_inteligente(codigo_mod, 500)
+                    assinaturas.append(f"  {mod}: {sigs[:200]}")
+
                 partes.append(
-                    f"MÓDULOS DISPONÍVEIS PARA IMPORTAR: {', '.join(modulos_existentes)}\n"
-                    f"IMPORTANTE: Este é o PONTO DE ENTRADA. Deve importar e usar os módulos acima "
-                    f"para criar uma interface interativa (CLI com menu ou servidor web)."
+                    "MÓDULOS DO PROJETO (DEVE importar e usar):\n"
+                    + "\n".join(assinaturas)
+                    + "\n\n"
+                    + "IMPORTANTE — INTEGRAÇÃO OBRIGATÓRIA:\n"
+                    + "- Este é o PONTO DE ENTRADA. DEVE importar classes/funções dos módulos acima.\n"
+                    + "- Se existe models.py E storage.py: o ponto de entrada deve conectá-los.\n"
+                    + "  Ex: Storage recebe/usa o Manager, ou o Manager usa Storage para persistir.\n"
+                    + "- NÃO crie instâncias isoladas que não se comunicam.\n"
+                    + "- O fluxo de dados deve ser: Entrada do Usuário → Manager/Model → Storage → Disco"
                 )
+
+        # Se é módulo de persistência, lembra de importar models
+        eh_storage = step.arquivo and any(
+            x in step.arquivo.lower() for x in ("storage", "persist", "database", "db", "repo")
+        )
+        if eh_storage and "models" in " ".join(self.scratchpad.keys()):
+            partes.append(
+                "ATENÇÃO: Este módulo de persistência DEVE importar as classes de models.py.\n"
+                "Use 'from models import ...' para referenciar os tipos de dados.\n"
+                "NÃO recrie classes que já existem em models.py."
+            )
 
         # Reforça stack se definida nas decisões
         stack_decisao = next(
@@ -173,6 +206,29 @@ class SessaoCodigo:
         partes.append(f"STEP ({step.numero}/{len(self.plano)}): {step.descricao}")
         if step.arquivo:
             partes.append(f"GERE: {step.arquivo}")
+
+            # Reforça o formato esperado para evitar confusão de conteúdo
+            formato_hints = {
+                ".txt": (
+                    "FORMATO: Texto simples. Se for requirements.txt: um pacote por linha "
+                    "(ex: flask>=3.0). NÃO coloque HTML aqui."
+                ),
+                ".css": (
+                    "FORMATO: Apenas regras CSS válidas (seletores { propriedade: valor; }). "
+                    "NÃO coloque Python ou HTML aqui."
+                ),
+                ".html": (
+                    "FORMATO: HTML válido. Pode usar Jinja2 ({{ }}, {% %}) se for template Flask. "
+                    "NÃO coloque Python puro aqui."
+                ),
+                ".js": "FORMATO: JavaScript válido. NÃO coloque Python aqui.",
+                ".json": "FORMATO: JSON válido. NÃO coloque código aqui.",
+                ".md": "FORMATO: Markdown com instruções reais de instalação e execução do projeto.",
+            }
+            for ext, hint in formato_hints.items():
+                if step.arquivo.endswith(ext):
+                    partes.append(hint)
+                    break
 
         return "\n\n".join(partes)
 
@@ -260,6 +316,57 @@ def _ollama_disponivel() -> bool:
         return False
 
 
+def _criar_scaffold_offline(objetivo: str) -> SessaoCodigo:
+    """Cria um scaffold sintaticamente válido usando apenas templates locais."""
+    template = selecionar_template(objetivo)
+    if template is None:
+        return SessaoCodigo(
+            objetivo=objetivo,
+            erros=["Ollama indisponível e nenhum template local compatível foi encontrado."],
+        )
+
+    sessao = SessaoCodigo(
+        objetivo=objetivo,
+        decisoes=[f"Stack: {template.stack}", "Modo offline: scaffold baseado em template"],
+        projeto_validado=False,
+    )
+    for numero, template_step in enumerate(template.gerar_plano(), 1):
+        step = StepPlano(
+            numero=numero,
+            descricao=template_step.descricao,
+            arquivo=template_step.arquivo,
+            dependencias=template_step.dependencias,
+        )
+        esqueleto = obter_esqueleto(template, step.arquivo)
+        conteudo = esqueleto or _conteudo_offline_padrao(step.arquivo, objetivo)
+        sessao.plano.append(step)
+        sessao.registrar_resultado(step, conteudo)
+    return sessao
+
+
+def _conteudo_offline_padrao(arquivo: str, objetivo: str) -> str:
+    """Conteúdo mínimo válido para arquivos sem esqueleto específico."""
+    nome = Path(arquivo).name
+    if nome.lower() == "readme.md":
+        return (
+            f"# Projeto\n\n{objetivo}\n\n"
+            "Scaffold criado em modo offline. Revise os módulos antes de uso em produção.\n"
+        )
+    if arquivo.endswith(".py"):
+        return f'"""Módulo gerado offline para: {objetivo}."""\n'
+    if arquivo.endswith((".js", ".jsx")):
+        return "'use strict';\n"
+    if arquivo.endswith((".ts", ".tsx")):
+        return "export {};\n"
+    if arquivo.endswith(".json"):
+        return "{}\n"
+    if arquivo.endswith(".html"):
+        return "<!doctype html><html><body><main id=\"app\"></main></body></html>\n"
+    if arquivo.endswith(".css"):
+        return "body { font-family: sans-serif; }\n"
+    return ""
+
+
 # ══════════════════════════════════════════════════════════════
 # [8] PERSISTÊNCIA DE SESSÃO
 # ══════════════════════════════════════════════════════════════
@@ -275,6 +382,7 @@ def _persistir_sessao(sessao: SessaoCodigo):
         "decisoes": sessao.decisoes,
         "erros": sessao.erros,
         "tempo_total_ms": sessao.tempo_total_ms,
+        "projeto_validado": sessao.projeto_validado,
         "plano": [
             {"numero": s.numero, "descricao": s.descricao, "arquivo": s.arquivo,
              "dependencias": s.dependencias, "concluido": s.concluido, "pulado": s.pulado}
@@ -296,6 +404,7 @@ def _restaurar_sessao() -> Optional[SessaoCodigo]:
             scratchpad=dados.get("scratchpad", {}),
             decisoes=dados.get("decisoes", []),
             erros=dados.get("erros", []),
+            projeto_validado=dados.get("projeto_validado"),
         )
         for s in dados.get("plano", []):
             sessao.plano.append(StepPlano(
@@ -398,22 +507,25 @@ def gc_chromadb(dias_expiracao: int = 30) -> int:
     """
     from datetime import datetime, timedelta
     sem = MemoriaSemantica()
-    if sem.collection.count() == 0:
-        return 0
-
     limite = (datetime.now() - timedelta(days=dias_expiracao)).isoformat()
-    # Busca todos os documentos com metadata
+    removidos = 0
     try:
-        todos = sem.collection.get(include=["metadatas"])
-        ids_remover = []
-        for i, meta in enumerate(todos["metadatas"]):
-            criado = meta.get("criado_em", "")
-            if criado and criado < limite:
-                ids_remover.append(todos["ids"][i])
-
-        if ids_remover:
-            sem.collection.delete(ids=ids_remover)
-        return len(ids_remover)
+        colecoes = {
+            collection.name: collection for collection in sem.collections.values()
+        }.values()
+        for collection in colecoes:
+            if collection.count() == 0:
+                continue
+            todos = collection.get(include=["metadatas"])
+            ids_remover = []
+            for i, meta in enumerate(todos["metadatas"]):
+                criado = (meta or {}).get("criado_em", "")
+                if criado and criado < limite:
+                    ids_remover.append(todos["ids"][i])
+            if ids_remover:
+                collection.delete(ids=ids_remover)
+                removidos += len(ids_remover)
+        return removidos
     except Exception:
         return 0
 
@@ -472,18 +584,30 @@ def editar_arquivo(sessao: SessaoCodigo, arquivo: str, instrucao: str) -> str:
 
 _PROMPT_COT_1 = """Analise o projeto solicitado e liste as funcionalidades necessárias para: {objetivo}
 
+PRIMEIRO, IDENTIFIQUE O TIPO DE ENTREGA:
+- Se o objetivo menciona "site", "web", "página", "dashboard", "painel", "formulário" → É um SITE WEB (Flask + HTML)
+- Se o objetivo menciona "api", "rest", "endpoint", "backend" → É uma API (FastAPI/Express)
+- Se o objetivo menciona "cli", "terminal", "menu" → É uma CLI
+- Se não especificado E envolve CRUD de dados → padrão = SITE WEB com Flask
+- Se não especificado E é utilitário/cálculo → padrão = CLI
+
 REGRAS OBRIGATÓRIAS:
-- O projeto DEVE ter um ponto de entrada executável (main.py, index.js, app.py, etc.)
-- O projeto DEVE ter interface interativa: CLI com menu/readline, ou servidor web com endpoints testáveis, ou GUI
-- O projeto DEVE funcionar ao rodar (python main.py, node index.js, etc.) sem configuração extra
-- Inclua: arquivo de configuração/dependências (requirements.txt, package.json), README com instruções de uso
-- Se for CLI: use menus interativos, prompts de input, feedback visual
-- Se for web: inclua ao menos uma rota funcional testável com curl ou navegador
-- ESCOLHA UMA ÚNICA LINGUAGEM/STACK e use apenas ela em todo o projeto. Não misture Python e JavaScript.
-- Se não especificado, use Python com CLI interativa
+- O projeto DEVE ter um ponto de entrada executável
+- Para SITE WEB: use Flask com templates HTML, formulários, rotas CRUD, CSS básico
+- Para CLI: use menus interativos com input(), feedback visual
+- Para API: use FastAPI/Express com endpoints RESTful
+- Inclua: arquivo de dependências (requirements.txt/package.json), README com instruções
+- TODOS os módulos devem se INTEGRAR: models → storage → ponto de entrada (conectados)
+- NÃO crie módulos paralelos desconectados
+- ESCOLHA UMA ÚNICA LINGUAGEM/STACK e use apenas ela em todo o projeto
+
+IMPORTANTE SOBRE PERSISTÊNCIA:
+- Se o projeto armazena dados: o módulo de storage DEVE importar os models
+- O ponto de entrada DEVE usar storage para salvar/carregar dados
+- Não crie Manager em memória E Storage separado sem conexão entre eles
 
 Responda como bullet points. Máximo 10 itens. Seja específico e técnico.
-O PRIMEIRO item deve ser sempre o ponto de entrada principal com interface interativa.
+O PRIMEIRO item deve ser sempre o ponto de entrada principal com a interface adequada ao tipo.
 O ÚLTIMO item deve ser o README.md com instruções de execução."""
 
 _PROMPT_COT_2 = """Com base nestas funcionalidades:
@@ -493,7 +617,8 @@ Organize em arquivos de código. Cada arquivo = 1 step.
 REGRAS:
 - O PRIMEIRO step DEVE ser o arquivo de dependências (requirements.txt ou package.json)
 - O SEGUNDO step DEVE ser os módulos/classes de lógica de negócio
-- O PENÚLTIMO step DEVE ser o ponto de entrada principal (main.py/index.js/app.py) que importa os módulos e oferece interface interativa
+- O PENÚLTIMO step DEVE ser o ponto de entrada principal (main.py/index.js/app.py) que importa os módulos\
+ e oferece interface interativa
 - O ÚLTIMO step DEVE ser README.md com instruções claras de execução
 - Todos os arquivos devem se conectar via imports
 - O ponto de entrada deve ser EXECUTÁVEL e INTERATIVO (menu, prompts, servidor)
@@ -521,21 +646,54 @@ _PROMPT_CODER = """Você é um programador expert que cria projetos FUNCIONAIS e
 
 REGRAS OBRIGATÓRIAS:
 1. Gere APENAS o código do arquivo pedido — completo e funcional
-2. Inclua TODOS os imports necessários no topo
+2. Inclua TODOS os imports necessários no topo, incluindo imports de OUTROS MÓDULOS DO PROJETO
+   - Se o step indica dependências (models.py, storage.py, etc.), DEVE importar deles
+   - Exemplo: "from models import Contato, ContatoManager" se models.py define essas classes
 3. Se for o ponto de entrada (main.py, index.js, app.py): DEVE ter interface interativa
    - Para CLI: use loop com menu de opções, input() do usuário, feedback visual
-   - Para web: servidor que suba e responda em localhost
-4. Se for módulo: exporte classes/funções que o ponto de entrada vai importar
-5. Se for requirements.txt/package.json: liste APENAS dependências realmente usadas
-6. Se for README.md: inclua instruções EXATAS de como instalar e executar
-7. Código deve funcionar ao ser executado — sem TODOs, sem stubs, sem "implementar depois"
-8. Use a stack definida pelo usuário. Se não definida, use Python com CLI interativa
-9. NÃO inclua explicações fora do código — apenas comentários inline quando necessário
-10. O projeto deve ser VIVO: o usuário roda e interage imediatamente"""
+   - Para web/site: servidor Flask/Express com rotas, templates HTML, CRUD funcional
+4. Se for módulo auxiliar (storage, services): DEVE importar os modelos do projeto
+   - Exemplo: storage.py que usa Contato DEVE ter "from models import Contato"
+5. INTEGRAÇÃO ENTRE MÓDULOS É OBRIGATÓRIA:
+   - O ponto de entrada DEVE usar os módulos de negócio (models) E de persistência (storage) juntos
+   - O storage DEVE salvar/carregar os dados do manager — ambos devem operar sobre a MESMA lista
+   - NÃO crie dois sistemas paralelos desconectados (ex: Manager em memória + Storage separado)
+   - O fluxo correto: ponto de entrada → usa manager → manager usa storage internamente
+6. Se for requirements.txt/package.json: liste APENAS dependências realmente usadas no código
+7. Se for README.md: inclua instruções EXATAS de como instalar e executar
+8. Código deve funcionar ao ser executado — sem TODOs, sem stubs, sem "implementar depois"
+9. Use a stack definida nas DECISÕES do projeto. Se não definida, use Python com CLI interativa
+10. O projeto deve ser VIVO: o usuário roda e interage imediatamente
+11. Trate inputs opcionais corretamente: string vazia ("") significa "manter valor atual", não substituir
+12. NÃO inclua explicações fora do código — apenas comentários inline quando necessário
+
+FORMATO DO CONTEÚDO POR TIPO DE ARQUIVO (CRÍTICO — NÃO MISTURE):
+- requirements.txt → APENAS nomes de pacotes, um por linha. Ex: flask>=3.0
+- package.json → APENAS JSON válido com dependências
+- *.py → APENAS código Python válido
+- *.js → APENAS código JavaScript válido
+- *.html → APENAS HTML válido (pode incluir Jinja2 se for template Flask)
+- *.css → APENAS regras CSS válidas (seletores, propriedades, valores)
+- README.md → APENAS Markdown com instruções de uso
+
+NUNCA coloque HTML dentro de um .txt, NUNCA coloque Python dentro de um .css, NUNCA coloque CSS dentro de um .py."""
 
 _PROMPT_VALIDAR = """Avalie se o código atende ao objetivo e é EXECUTÁVEL.
-Critérios: código completo (sem TODOs/stubs), imports corretos, interface funcional (se for ponto de entrada).
-Responda JSON: {"valido":true/false,"problemas":[],"decisoes":[]}"""
+
+Critérios (todos devem ser verdadeiros):
+1. Código completo (sem TODOs/stubs/pass vazio)
+2. Imports corretos — inclui imports de outros módulos do PROJETO (não só stdlib)
+3. Interface funcional — se for ponto de entrada: CLI com menu OU servidor web com rotas
+4. Integração — se usa dados de outros módulos, deve importar E usar as classes/funções deles
+5. Consistência — se é storage/persistência, deve importar os modelos do projeto (ex: from models import ...)
+6. requirements.txt/package.json — lista APENAS o que é realmente importado no código
+
+Responda JSON: {"valido":true/false,"problemas":[],"decisoes":[]}
+
+Exemplos de problemas comuns:
+- "storage.py usa Contato mas não importa de models" → inválido
+- "main.py cria Manager e Storage mas não os conecta" → inválido
+- "requirements.txt lista Flask mas nenhum arquivo usa Flask" → inválido"""
 
 _PROMPT_RETRY = """PROBLEMAS ENCONTRADOS:
 {problemas}
@@ -569,12 +727,21 @@ def executar_projeto(
         indexar_existente: [9] Se True, lê projeto atual como contexto
     """
     inicio_total = time.time()
-    semantica = MemoriaSemantica()
 
     # [5] Verifica se Ollama está disponível
     if not _ollama_disponivel():
-        console.print("[red]❌ Ollama não está rodando. Execute: ollama serve[/red]")
-        return SessaoCodigo(objetivo=objetivo, erros=["Ollama indisponível"])
+        console.print("[yellow]⚡ Ollama indisponível; usando scaffold offline.[/yellow]")
+        sessao = _criar_scaffold_offline(objetivo)
+        sessao.tempo_total_ms = int((time.time() - inicio_total) * 1000)
+        problemas = _validar_projeto_gerado(sessao)
+        sessao.erros.extend(problemas)
+        sessao.projeto_validado = False
+        if salvar_disco and sessao.scratchpad:
+            caminho = _exportar_disco(sessao, diretorio_saida)
+            console.print(f"[bold green]📁 Scaffold salvo em: {caminho}[/bold green]")
+        return sessao
+
+    semantica = MemoriaSemantica()
 
     # [8] Verifica se há sessão anterior para continuar
     sessao_anterior = _restaurar_sessao()
@@ -593,7 +760,6 @@ def executar_projeto(
     if indexar_existente:
         indice = _indexar_projeto()
         if indice:
-            resumo_projeto = "\n".join(f"  {k}" for k in list(indice.keys())[:20])
             console.print(f"[dim]📁 Projeto existente indexado ({len(indice)} arquivos)[/dim]")
             sessao.decisoes.insert(0, f"Projeto existente: {', '.join(list(indice.keys())[:10])}")
 
@@ -622,7 +788,7 @@ def executar_projeto(
             sessao.rollback()
             step.pulado = True
             sessao.erros.append(f"Step {step.numero} pulado: {step.descricao}")
-            console.print(f"  [red]⏭️  Step pulado (rollback aplicado)[/red]")
+            console.print("  [red]⏭️  Step pulado (rollback aplicado)[/red]")
 
         # [8] Persiste após cada step
         _persistir_sessao(sessao)
@@ -635,15 +801,29 @@ def executar_projeto(
                     console.print("[yellow]Sessão pausada. Use /projeto para continuar.[/yellow]")
                     break
                 sessao.decisoes.append(f"Feedback do usuário: {feedback}")
-                console.print(f"[dim]📝 Decisão registrada[/dim]")
+                console.print("[dim]📝 Decisão registrada[/dim]")
 
     # ─── FINALIZAÇÃO ───
     sessao.tempo_total_ms = int((time.time() - inicio_total) * 1000)
+    problemas_projeto = _validar_projeto_gerado(sessao)
+    if problemas_projeto:
+        sessao.projeto_validado = False
+        sessao.erros.extend(f"Validação final: {p}" for p in problemas_projeto)
+        console.print(
+            f"[yellow]⚠️ Validação final encontrou {len(problemas_projeto)} problema(s).[/yellow]"
+        )
+    else:
+        sessao.projeto_validado = True
+        console.print("[green]🧪 Smoke checks do projeto passaram.[/green]")
     _salvar_projeto_completo(semantica, sessao)
 
-    if salvar_disco and sessao.scratchpad:
+    if salvar_disco and sessao.scratchpad and sessao.projeto_validado:
         caminho = _exportar_disco(sessao, diretorio_saida)
         console.print(f"\n[bold green]📁 Salvo em: {caminho}[/bold green]")
+    elif salvar_disco and sessao.scratchpad:
+        console.print(
+            "[yellow]📁 Exportação bloqueada: corrija os problemas da validação final.[/yellow]"
+        )
 
     # [8] Limpa persistência se concluiu
     if sessao.concluida:
@@ -699,6 +879,17 @@ def _executar_step_com_validacao(
         validacao = _validar_step(sessao, step, codigo)
 
         if validacao["valido"]:
+            # [14] Validação de integração entre módulos (heurística rápida)
+            problemas_integracao = _validar_integracao(sessao, step, codigo)
+            if problemas_integracao and tentativa <= MAX_RETRIES:
+                console.print(f"  [yellow]⚠️ Integração: {'; '.join(problemas_integracao[:2])}[/yellow]")
+                codigo = _retry_step(sessao, step, codigo, problemas_integracao)
+                if step.arquivo.endswith(".py"):
+                    v, _ = _validar_sintaxe(codigo, step.arquivo)
+                    if not v:
+                        continue
+                # Aceita após retry de integração (não re-verifica para não entrar em loop)
+
             sessao.registrar_resultado(step, codigo)
 
             for d in validacao.get("decisoes", []):
@@ -729,7 +920,7 @@ def _executar_step_com_validacao(
                 if v2["valido"]:
                     sessao.registrar_resultado(step, codigo)
                     _salvar_aprendizado(semantica, sessao, step, codigo)
-                    console.print(f"  [green]✅ Corrigido[/green]")
+                    console.print("  [green]✅ Corrigido[/green]")
                     return True
 
     # Última chance: aceita se tem sintaxe OK
@@ -738,7 +929,7 @@ def _executar_step_com_validacao(
             sessao.registrar_resultado(step, codigo)
             sessao.erros.append(f"Step {step.numero}: aceito com ressalvas")
             _salvar_aprendizado(semantica, sessao, step, codigo)
-            console.print(f"  [yellow]⚡ Aceito com ressalvas[/yellow]")
+            console.print("  [yellow]⚡ Aceito com ressalvas[/yellow]")
             return True
 
     return False
@@ -845,7 +1036,7 @@ def _planejar_cot(objetivo: str) -> SessaoCodigo:
             options={"temperature": 0.3, "num_predict": 300},
         )
         funcionalidades = r1["message"]["content"].strip()
-        console.print(f"[dim]  Funcionalidades identificadas[/dim]")
+        console.print("[dim]  Funcionalidades identificadas[/dim]")
 
         # Passo 2: organizar em steps
         r2 = ollama.chat(
@@ -942,6 +1133,131 @@ def _validar_step(sessao: SessaoCodigo, step: StepPlano, codigo: str) -> dict:
         return {"valido": True, "problemas": [], "decisoes": []}
 
 
+def _validar_integracao(sessao: SessaoCodigo, step: StepPlano, codigo: str) -> list[str]:
+    """
+    Validação heurística de integração entre módulos.
+    Verifica se o código atual referencia corretamente os módulos já gerados.
+    Retorna lista de problemas (vazia = OK).
+    """
+    problemas = []
+    if not step.arquivo:
+        return problemas
+
+    arquivo = step.arquivo
+    codigo_lower = codigo.lower()
+
+    # ─── Regra 0: Validação de TIPO DE CONTEÚDO ───
+    # Detecta quando o LLM gerou conteúdo errado para o tipo de arquivo
+    if arquivo.endswith(".txt") or arquivo == "requirements.txt":
+        if "<!DOCTYPE" in codigo or "<html" in codigo or "<head" in codigo:
+            problemas.append(
+                f"O arquivo {arquivo} contém HTML mas deveria conter apenas texto/dependências. "
+                f"Para requirements.txt: liste apenas pacotes Python, um por linha (ex: flask>=3.0)"
+            )
+        if "def " in codigo or "import " in codigo or "class " in codigo:
+            problemas.append(
+                f"O arquivo {arquivo} parece conter código Python mas deveria ser apenas lista de pacotes"
+            )
+
+    if arquivo.endswith(".css"):
+        if "from flask" in codigo or "import " in codigo or "def " in codigo:
+            problemas.append(
+                f"O arquivo {arquivo} contém código Python mas deveria conter apenas CSS. "
+                f"Gere regras CSS: seletores {{ propriedade: valor; }}"
+            )
+        if "<!DOCTYPE" in codigo or "<html" in codigo:
+            problemas.append(
+                f"O arquivo {arquivo} contém HTML mas deveria conter apenas CSS"
+            )
+
+    if arquivo.endswith(".html"):
+        if codigo.strip().startswith(("from ", "import ", "#!/")):
+            problemas.append(
+                f"O arquivo {arquivo} começa com código Python mas deveria ser HTML. "
+                f"Gere HTML com tags: <!DOCTYPE html><html>..."
+            )
+
+    if arquivo.endswith(".js") and not arquivo.endswith(".json"):
+        if "from flask" in codigo or "import flask" in codigo_lower:
+            problemas.append(
+                f"O arquivo {arquivo} contém imports Python mas deveria ser JavaScript"
+            )
+
+    # Se já encontrou problemas de tipo, retorna imediatamente (não faz sentido checar integração)
+    if problemas:
+        return problemas
+
+    # ─── Regra 1: Storage/persistência deve importar models ───
+    eh_storage = any(
+        x in arquivo.lower() for x in ("storage", "persist", "database", "db", "repo")
+    )
+    if eh_storage:
+        # Verifica se models.py existe e se storage importa dele
+        modelos_existentes = [
+            f for f in sessao.scratchpad.keys()
+            if "model" in f.lower() and f.endswith(".py")
+        ]
+        if modelos_existentes:
+            # Extrai classes definidas em models
+            for mod_file in modelos_existentes:
+                mod_code = sessao.scratchpad[mod_file]
+                classes = re.findall(r"class\s+(\w+)", mod_code)
+                # Verifica se storage usa alguma classe sem importar
+                for cls in classes:
+                    if cls in codigo and f"from {mod_file.replace('.py', '')} import" not in codigo:
+                        if f"import {mod_file.replace('.py', '')}" not in codigo:
+                            problemas.append(
+                                f"Usa '{cls}' mas não importa de {mod_file}. "
+                                f"Adicione: from {mod_file.replace('.py', '')} import {cls}"
+                            )
+
+    # ─── Regra 2: Ponto de entrada deve usar storage E models ───
+    eh_ponto_entrada = arquivo.split(".")[0] in ("main", "index", "app", "server", "cli")
+    if eh_ponto_entrada:
+        tem_storage = any("storage" in f.lower() for f in sessao.scratchpad.keys())
+        tem_models = any("model" in f.lower() for f in sessao.scratchpad.keys())
+
+        if tem_storage and "storage" not in codigo_lower and "import" in codigo_lower:
+            problemas.append(
+                "Ponto de entrada não usa o módulo storage — dados não serão persistidos. "
+                "Importe e use Storage para salvar/carregar dados."
+            )
+
+        if tem_models and tem_storage:
+            # Verifica se ambos são instanciados mas não conectados
+            tem_import_storage = "storage" in codigo_lower
+            tem_import_models = any(
+                f"from {f.replace('.py', '')}" in codigo or f"import {f.replace('.py', '')}" in codigo
+                for f in sessao.scratchpad.keys() if "model" in f.lower()
+            )
+            if tem_import_storage and tem_import_models:
+                # Ambos importados — verifica se estão conectados (heurística básica)
+                # Se cria instâncias separadas sem passar uma para outra, é suspeito
+                pass  # Aceita — a verificação completa exigiria análise AST profunda
+
+    # ─── Regra 3: requirements.txt deve ter apenas o que é usado ───
+    if arquivo == "requirements.txt":
+        deps_listadas = [
+            line.split("==")[0].split(">=")[0].split("<=")[0].strip().lower()
+            for line in codigo.split("\n")
+            if line.strip() and not line.strip().startswith("#")
+        ]
+        # Verifica se cada dep é usada em algum arquivo do projeto
+        for dep in deps_listadas:
+            dep_import = dep.replace("-", "_")  # flask-cors → flask_cors
+            usado = any(
+                dep_import in src_code.lower() or dep in src_code.lower()
+                for f, src_code in sessao.scratchpad.items()
+                if f.endswith((".py", ".js", ".ts")) and f != arquivo
+            )
+            if not usado:
+                problemas.append(
+                    f"requirements.txt lista '{dep}' mas nenhum arquivo do projeto importa essa biblioteca"
+                )
+
+    return problemas
+
+
 # ══════════════════════════════════════════════════════════════
 # APRENDIZADO CHROMADB
 # ══════════════════════════════════════════════════════════════
@@ -998,9 +1314,88 @@ def _exportar_disco(sessao: SessaoCodigo, diretorio: str | None = None) -> Path:
         "erros": sessao.erros,
         "tempo_ms": sessao.tempo_total_ms,
         "metricas_rag": sessao.metricas_rag,
+        "projeto_validado": sessao.projeto_validado,
     }
     (base / "_meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
     return base
+
+
+def _validar_projeto_gerado(sessao: SessaoCodigo) -> list[str]:
+    """Executa verificações locais baratas no conjunto completo de arquivos."""
+    if not sessao.scratchpad:
+        return ["nenhum arquivo foi gerado"]
+
+    problemas: list[str] = []
+    arquivos = set(sessao.scratchpad)
+    for step in sessao.plano:
+        for dependencia in step.dependencias:
+            # Dependências podem representar diretórios conceituais em alguns templates.
+            if dependencia.endswith("/") or dependencia in arquivos:
+                continue
+            problemas.append(
+                f"{step.arquivo or step.descricao}: dependência ausente {dependencia}"
+            )
+
+    pontos_entrada = {
+        "main.py", "app.py", "index.js", "server.js", "src/index.ts", "src/main.jsx"
+    }
+    if not (arquivos & pontos_entrada):
+        problemas.append("ponto de entrada executável não identificado")
+
+    with tempfile.TemporaryDirectory(prefix="potato-claw-check-") as tmp:
+        base = Path(tmp)
+        for arquivo, conteudo in sessao.scratchpad.items():
+            destino = base / arquivo
+            destino.parent.mkdir(parents=True, exist_ok=True)
+            destino.write_text(conteudo, encoding="utf-8")
+
+        arquivos_py = list(base.rglob("*.py"))
+        if arquivos_py:
+            proc = subprocess.run(
+                [sys.executable, "-m", "compileall", "-q", str(base)],
+                capture_output=True,
+                text=True,
+                timeout=20,
+            )
+            if proc.returncode != 0:
+                problemas.append((proc.stderr or proc.stdout or "falha no compileall").strip()[:500])
+
+        package_json = base / "package.json"
+        if package_json.exists():
+            try:
+                json.loads(package_json.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError) as exc:
+                problemas.append(f"package.json inválido: {exc}")
+
+        node = shutil.which("node")
+        if node:
+            for arquivo_js in list(base.rglob("*.js")):
+                proc = subprocess.run(
+                    [node, "--check", str(arquivo_js)],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+                if proc.returncode != 0:
+                    problemas.append(
+                        f"{arquivo_js.relative_to(base)}: "
+                        f"{(proc.stderr or proc.stdout).strip()[:300]}"
+                    )
+
+    return problemas
+
+
+def _atualizar_validacao_final(sessao: SessaoCodigo) -> list[str]:
+    """Atualiza o estado de conclusão a partir dos smoke checks locais."""
+    problemas = _validar_projeto_gerado(sessao)
+    sessao.projeto_validado = not problemas
+    if problemas:
+        existentes = set(sessao.erros)
+        for problema in problemas:
+            mensagem = f"Validação final: {problema}"
+            if mensagem not in existentes:
+                sessao.erros.append(mensagem)
+    return problemas
 
 
 # Tags de linguagem reconhecidas na cerca (usadas só no caso de cerca aberta
@@ -1057,10 +1452,13 @@ def _parse_plano(objetivo: str, raw: str) -> SessaoCodigo:
         return SessaoCodigo(objetivo=objetivo, plano=[StepPlano(numero=1, descricao=objetivo, arquivo="main.py")])
     depth, fim = 0, -1
     for i in range(inicio, len(raw)):
-        if raw[i] == "{": depth += 1
+        if raw[i] == "{":
+            depth += 1
         elif raw[i] == "}":
             depth -= 1
-            if depth == 0: fim = i + 1; break
+            if depth == 0:
+                fim = i + 1
+                break
     if fim == -1:
         return SessaoCodigo(objetivo=objetivo, plano=[StepPlano(numero=1, descricao=objetivo, arquivo="main.py")])
     try:
@@ -1078,17 +1476,26 @@ def _parse_plano(objetivo: str, raw: str) -> SessaoCodigo:
 def _parse_validacao(raw: str) -> dict:
     """Parseia JSON de validação."""
     inicio = raw.find("{")
-    if inicio == -1: return {"valido": True, "problemas": [], "decisoes": []}
+    if inicio == -1:
+        return {"valido": True, "problemas": [], "decisoes": []}
     depth, fim = 0, -1
     for i in range(inicio, len(raw)):
-        if raw[i] == "{": depth += 1
+        if raw[i] == "{":
+            depth += 1
         elif raw[i] == "}":
             depth -= 1
-            if depth == 0: fim = i + 1; break
-    if fim == -1: return {"valido": True, "problemas": [], "decisoes": []}
+            if depth == 0:
+                fim = i + 1
+                break
+    if fim == -1:
+        return {"valido": True, "problemas": [], "decisoes": []}
     try:
         d = json.loads(raw[inicio:fim])
-        return {"valido": bool(d.get("valido", True)), "problemas": d.get("problemas", []), "decisoes": d.get("decisoes", [])}
+        return {
+            "valido": bool(d.get("valido", True)),
+            "problemas": d.get("problemas", []),
+            "decisoes": d.get("decisoes", []),
+        }
     except (json.JSONDecodeError, KeyError):
         return {"valido": True, "problemas": [], "decisoes": []}
 
@@ -1157,6 +1564,8 @@ def avancar_sessao() -> tuple[Optional[StepPlano], str]:
     sem = MemoriaSemantica()
     _sessao_ativa.snapshot()
     sucesso = _executar_step_com_validacao(_sessao_ativa, step, sem)
+    if sucesso and _sessao_ativa.step_pendente() is None:
+        _atualizar_validacao_final(_sessao_ativa)
     _persistir_sessao(_sessao_ativa)
     if sucesso:
         return step, step.resultado
@@ -1186,6 +1595,8 @@ def rerun_step(numero: int) -> tuple[Optional[StepPlano], str]:
             _sessao_ativa.snapshot()
             sem = MemoriaSemantica()
             sucesso = _executar_step_com_validacao(_sessao_ativa, step, sem)
+            if sucesso and _sessao_ativa.step_pendente() is None:
+                _atualizar_validacao_final(_sessao_ativa)
             _persistir_sessao(_sessao_ativa)
             if sucesso:
                 return step, step.resultado

@@ -14,7 +14,6 @@ Uso:
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
 
 
@@ -46,13 +45,9 @@ TEMPLATES: list[TemplateProjeto] = [
     TemplateProjeto(
         nome="cli_python",
         palavras_chave=[
-            "cli", "terminal", "menu", "interativo", "lista", "contato", "tarefa",
-            "todo", "cadastro", "gerenciador", "calculadora", "conversor", "jogo",
-            "quiz", "agenda", "inventário", "estoque", "registro", "controle",
-            "sistema", "ferramenta", "utilitário", "aplicativo", "python",
-            "galeria", "fotos", "foto", "álbum", "imagem", "imagens",
-            "notas", "nota", "diário", "receita", "receitas", "biblioteca",
-            "catálogo", "catalogo", "organizador", "player", "música",
+            "cli", "terminal", "menu", "interativo", "calculadora", "conversor", "jogo",
+            "quiz", "utilitário", "python",
+            "player", "música",
         ],
         stack="Python",
         steps=[
@@ -97,8 +92,8 @@ TEMPLATES: list[TemplateProjeto] = [
     ),
     TemplateProjeto(
         nome="api_flask",
-        palavras_chave=["flask", "web", "servidor", "site"],
-        stack="Python + Flask",
+        palavras_chave=["flask", "servidor flask", "api flask", "backend flask"],
+        stack="Python + Flask (API)",
         steps=[
             TemplateStep("Arquivo de dependências", "requirements.txt"),
             TemplateStep("Modelos de dados", "models.py"),
@@ -360,27 +355,37 @@ TEMPLATES: list[TemplateProjeto] = [
     TemplateProjeto(
         nome="fullstack_simples",
         palavras_chave=[
-            "fullstack", "frontend", "html", "tela", "interface web",
-            "formulário", "dashboard", "painel", "página web",
-            "site simples", "landing", "webapp",
+            "site", "fullstack", "frontend", "html", "tela", "interface web",
+            "formulário", "dashboard", "painel", "página web", "pagina",
+            "site simples", "landing", "webapp", "web",
+            "lista", "contato", "tarefa", "todo", "cadastro", "gerenciador",
+            "agenda", "inventário", "estoque", "registro", "controle",
+            "sistema", "galeria", "fotos", "foto", "álbum", "imagem",
+            "notas", "nota", "diário", "receita", "receitas", "biblioteca",
+            "catálogo", "catalogo", "organizador", "aplicativo",
         ],
-        stack="Python + HTML",
+        stack="Python + Flask + HTML",
         steps=[
             TemplateStep("Arquivo de dependências", "requirements.txt"),
-            TemplateStep("Backend com Flask servindo HTML", "app.py"),
-            TemplateStep("Template HTML principal", "templates/index.html", ["app.py"]),
+            TemplateStep("Modelos de dados e lógica de negócio", "models.py"),
+            TemplateStep("Backend Flask com rotas e persistência", "app.py", ["models.py"]),
+            TemplateStep("Template HTML principal com formulários", "templates/index.html", ["app.py"]),
             TemplateStep("Estilos CSS", "static/style.css"),
             TemplateStep("JavaScript do frontend (interatividade)", "static/script.js"),
-            TemplateStep("Documentação com instruções", "README.md"),
+            TemplateStep("Documentação com instruções de execução", "README.md"),
         ],
         esqueletos={
             "requirements.txt": "flask>=3.0\n",
             "app.py": (
-                "from flask import Flask, render_template, request, jsonify\n\n"
+                "from flask import Flask, render_template, request, jsonify\n"
+                "import models  # Importar modelos do projeto\n\n"
                 "app = Flask(__name__)\n\n"
+                "# Inicializar dados/storage\n\n"
                 "@app.route('/')\n"
                 "def index():\n"
+                "    # Carregar dados e renderizar template\n"
                 "    return render_template('index.html')\n\n"
+                "# Rotas CRUD: adicionar, editar, deletar\n\n"
                 "if __name__ == '__main__':\n"
                 "    app.run(debug=True, port=5000)\n"
             ),
@@ -399,14 +404,28 @@ def selecionar_template(objetivo: str) -> TemplateProjeto | None:
     Retorna None se nenhum template é confiável o suficiente.
 
     Lógica de prioridade:
-    - Keywords de stack/framework (node, react, express, typescript) têm peso 3
-    - Keywords genéricas (app, sistema, lista) têm peso 2
-    - Match parcial tem peso 1
+    1. Palavras de INTENÇÃO DE ENTREGA (site, web, api, cli) — peso 10 (define o tipo de projeto)
+    2. Keywords de stack/framework (node, react, flask) — peso 5
+    3. Keywords de domínio (lista, contato, tarefa) — peso 1 (NÃO determinam o tipo)
+    4. Match parcial — peso 0.5
     """
     objetivo_lower = objetivo.lower()
-    pontuacoes: list[tuple[TemplateProjeto, int]] = []
+    pontuacoes: list[tuple[TemplateProjeto, float]] = []
+    # ─── KEYWORDS DE INTENÇÃO DE ENTREGA ───
+    # Estas palavras indicam O QUE o usuário quer (site vs cli vs api)
+    # e devem ter peso dominante sobre palavras de domínio
+    _INTENT_KEYWORDS = {
+        # Web/Site → prioriza templates web
+        "site", "web", "página", "pagina", "webapp", "interface web",
+        "frontend", "dashboard", "painel", "formulário", "formulario",
+        "navegador", "browser", "html", "landing",
+        # API → prioriza templates API
+        "api", "rest", "endpoint", "servidor", "http", "backend",
+        # CLI → prioriza templates CLI
+        "cli", "terminal", "menu", "linha de comando",
+    }
 
-    # Keywords que indicam stack explicitamente — dá prioridade
+    # Keywords que indicam stack/framework explicitamente
     _STACK_KEYWORDS = {
         "node", "nodejs", "javascript", "js", "npm",
         "react", "vite", "next", "nextjs", "next.js",
@@ -415,18 +434,44 @@ def selecionar_template(objetivo: str) -> TemplateProjeto | None:
         "python", "py",
     }
 
+    # ─── EXCLUSÃO CRUZADA ───
+    # Se o objetivo contém palavras web, penaliza templates CLI e vice-versa
+    _WEB_INTENT_WORDS = {"site", "web", "página", "pagina", "webapp", "frontend",
+                         "dashboard", "painel", "formulário", "formulario",
+                         "navegador", "browser", "html", "landing"}
+    _CLI_INTENT_WORDS = {"cli", "terminal", "linha de comando"}
+
+    tem_intencao_web = any(w in objetivo_lower for w in _WEB_INTENT_WORDS)
+    tem_intencao_cli = any(w in objetivo_lower for w in _CLI_INTENT_WORDS)
+
     for template in TEMPLATES:
         score = 0
+
+        # Penalização cruzada: se quer web, templates CLI perdem pontos
+        eh_template_cli = template.nome in ("cli_python", "cli_node", "typescript_cli")
+        eh_template_web = template.nome in (
+            "api_flask", "api_fastapi", "api_express",
+            "fullstack_simples", "react_app", "next_app",
+        )
+
+        if tem_intencao_web and eh_template_cli:
+            score -= 20  # Forte penalização
+        if tem_intencao_cli and eh_template_web:
+            score -= 20
+
         for kw in template.palavras_chave:
             if kw in objetivo_lower:
-                # Keywords de stack/framework têm peso dominante
-                peso = 5 if kw in _STACK_KEYWORDS else 2
-                score += peso
+                if kw in _INTENT_KEYWORDS:
+                    score += 10  # Intenção de entrega = peso dominante
+                elif kw in _STACK_KEYWORDS:
+                    score += 5   # Stack explícita = peso alto
+                else:
+                    score += 1   # Domínio (lista, contato) = peso mínimo
             # Match parcial (keyword dentro de uma palavra)
             elif any(kw in palavra for palavra in objetivo_lower.split()):
-                score += 1
-        if score > 0:
-            pontuacoes.append((template, score))
+                score += 0.5
+
+        pontuacoes.append((template, score))
 
     if not pontuacoes:
         return None
@@ -434,7 +479,7 @@ def selecionar_template(objetivo: str) -> TemplateProjeto | None:
     pontuacoes.sort(key=lambda x: x[1], reverse=True)
     melhor, melhor_score = pontuacoes[0]
 
-    # Só retorna se confiança mínima
+    # Só retorna se confiança mínima (score ≥ 2)
     if melhor_score >= 2:
         return melhor
 

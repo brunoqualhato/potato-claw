@@ -41,7 +41,10 @@ class TestPipelineNivel1:
         """Cálculo resolve no nível 1 sem chamar LLM principal."""
         mock_ollama.chat.return_value = {
             "message": {
-                "content": '{"agente":"generalista","precisa_web":false,"ferramenta":"calculo","parametros":{"expressao":"2+2"}}'
+                "content": (
+                    '{"agente":"generalista","precisa_web":false,'
+                    '"ferramenta":"calculo","parametros":{"expressao":"2+2"}}'
+                )
             }
         }
 
@@ -144,6 +147,28 @@ class TestPipelineNivel1:
 
         resultado = sistema_mock.executar("generalista", "como usar docker compose")
         assert resultado == "Use docker-compose up"
+        mock_ollama.chat.assert_not_called()
+
+    @patch("src.core.analisador.ollama")
+    def test_ferramenta_deterministica_nao_carrega_coordenador(self, mock_ollama, sistema_mock):
+        resultado = sistema_mock.executar("generalista", "quanto é 8*7")
+
+        assert "56" in resultado
+        assert sistema_mock.ultima_fonte == "ferramenta"
+        mock_ollama.chat.assert_not_called()
+
+    @patch("src.core.analisador.ollama")
+    def test_acao_mutavel_exige_confirmacao(self, mock_ollama, sistema_mock):
+        resultado = sistema_mock.executar(
+            "generalista", "criar arquivo data/teste.txt ::: conteúdo"
+        )
+
+        assert "Confirmação necessária" in resultado
+        assert sistema_mock.ultima_fonte == "confirmacao"
+        assert sistema_mock.cache.buscar(
+            "generalista:criar arquivo data/teste.txt ::: conteúdo"
+        ) is None
+        mock_ollama.chat.assert_not_called()
 
 
 class TestPipelineNivel2:
@@ -219,7 +244,9 @@ class TestPipelineNivel3:
 
         # Força nível 3 para ir direto ao pipeline profundo
         sistema_mock.forcar_nivel(3)
-        resultado = sistema_mock.executar("generalista", "crie uma API REST com autenticação JWT em Python usando FastAPI")
+        resultado = sistema_mock.executar(
+            "generalista", "crie uma API REST com autenticação JWT em Python usando FastAPI"
+        )
         assert "FastAPI" in resultado or "API" in resultado
 
 

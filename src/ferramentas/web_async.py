@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from concurrent.futures import ThreadPoolExecutor
-from typing import Callable, Any
+from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
 

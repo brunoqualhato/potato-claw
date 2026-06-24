@@ -1,4 +1,5 @@
 import pytest
+
 from src.conexoes.bus import MessageBus, OutboundMessage, SenderInfo
 from src.conexoes.channels.base import BaseChannel
 

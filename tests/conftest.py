@@ -3,8 +3,8 @@ Fixtures compartilhadas para isolamento de testes.
 Garante que testes não toquem a base de dados/cache real.
 """
 
+
 import pytest
-from unittest.mock import patch
 
 
 @pytest.fixture(autouse=True)

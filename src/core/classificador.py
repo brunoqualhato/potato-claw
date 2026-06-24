@@ -9,8 +9,7 @@ Nível 3 (Profundo): Modelo 4B com RAG completo
 
 import re
 
-from src.core.config import INDICADORES_SIMPLES, INDICADORES_COMPLEXOS
-
+from src.core.config import INDICADORES_COMPLEXOS, INDICADORES_SIMPLES
 
 PADRAO_EXPRESSAO = re.compile(r'^[\d\s\+\-\*\/\.\(\)\%\^]+$')
 PADRAO_CODIGO = re.compile(r'```|\bdef\b|\bclass\b|\bimport\b|\bSELECT\b|\bFROM\b', re.IGNORECASE)

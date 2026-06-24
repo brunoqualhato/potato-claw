@@ -5,6 +5,7 @@ Mantém as assinaturas públicas usadas por executor.py e main.py.
 """
 from __future__ import annotations
 
+import ollama
 from rich.console import Console
 
 from src.core.config import (
@@ -73,5 +74,36 @@ def verificar_modelo_disponivel(modelo: str) -> bool:
     return _provider.modelo_disponivel(modelo)
 
 
-def warmup_modelos(modelos: dict[str, str], keep_alive: str = "10m") -> None:
-    _provider.warmup(modelos, keep_alive=keep_alive)
+def warmup_modelos(
+    modelos: dict[str, str],
+    funcoes: tuple[str, ...] = ("rapido",),
+    keep_alive: str = KEEP_ALIVE_PRINCIPAL,
+):
+    """
+    Pré-carrega modelos na RAM do Ollama ao iniciar.
+    Evita latência de ~2-3s na primeira chamada.
+
+    Args:
+        modelos: dict de perfil MODELOS (rapido, completo, etc.)
+        funcoes: funções que devem ser aquecidas; embedding usa a API própria
+        keep_alive: tempo para manter na RAM
+    """
+    selecionados = [(funcao, modelos[funcao]) for funcao in funcoes if funcao in modelos]
+    vistos: set[str] = set()
+    for funcao, modelo in selecionados:
+        if modelo in vistos:
+            continue
+        vistos.add(modelo)
+        try:
+            if funcao == "embedding":
+                ollama.embeddings(model=modelo, prompt="warmup")
+            else:
+                ollama.chat(
+                    model=modelo,
+                    messages=[{"role": "user", "content": "oi"}],
+                    options={"num_predict": 1, "num_ctx": NUM_CTX_AUXILIAR},
+                    keep_alive=keep_alive,
+                )
+            console.print(f"  [dim]🔥 {modelo} carregado[/dim]")
+        except Exception:
+            pass

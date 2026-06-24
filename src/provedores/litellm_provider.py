@@ -58,9 +58,14 @@ class LiteLLMProvider(LLMProvider):
         return None
 
 
-try:  # registro só se quisermos disponibilizar mesmo sem litellm instalado
-    from src.provedores import registry as _registry
+# Registra "litellm" apenas se a dependencia estiver de fato instalada. Assim
+# registry.disponiveis() nao lista um provider que falharia com ImportError no uso.
+try:
+    import importlib.util
 
-    _registry.registrar("litellm", LiteLLMProvider)
+    if importlib.util.find_spec("litellm") is not None:
+        from src.provedores import registry as _registry
+
+        _registry.registrar("litellm", LiteLLMProvider)
 except Exception:
     pass

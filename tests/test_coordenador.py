@@ -1,9 +1,10 @@
 """Testes para o coordenador de roteamento por palavras-chave."""
 
 import pytest
+
 from src.agentes.coordenador import (
-    rotear_por_palavras_chave,
     _baixo_sinal,
+    rotear_por_palavras_chave,
     validar_prompt,
 )
 
@@ -69,6 +70,10 @@ class TestRotearPorPalavrasChave:
 
 
 class TestValidarPrompt:
+    def test_saudacao_e_valida(self):
+        valido, _ = validar_prompt("oi")
+        assert valido is True
+
     def test_vazio(self):
         valido, _ = validar_prompt("")
         assert valido is False

@@ -1,4 +1,5 @@
 import pytest
+
 from src.extensoes.mcp.client import MCPClient, MCPError
 
 

@@ -3,15 +3,16 @@ Testes para o módulo sessao_codigo (funções puras sem Ollama).
 Cobre parsing, validação, truncamento e lógica de sessão.
 """
 
-import pytest
 from src.agentes.sessao_codigo import (
-    _validar_sintaxe,
+    SessaoCodigo,
+    StepPlano,
+    _criar_scaffold_offline,
     _extrair_codigo,
     _parse_plano,
     _parse_validacao,
     _truncar_inteligente,
-    SessaoCodigo,
-    StepPlano,
+    _validar_projeto_gerado,
+    _validar_sintaxe,
     metricas_qualidade,
 )
 
@@ -41,6 +42,28 @@ class TestValidarSintaxe:
     def test_import_valido(self):
         valido, _ = _validar_sintaxe("from os import path\nimport sys", "util.py")
         assert valido is True
+
+
+class TestValidarProjetoGerado:
+    def test_projeto_python_valido(self):
+        sessao = SessaoCodigo(objetivo="teste", scratchpad={"main.py": "print('ok')\n"})
+        assert _validar_projeto_gerado(sessao) == []
+
+    def test_detecta_python_invalido(self):
+        sessao = SessaoCodigo(
+            objetivo="teste",
+            plano=[StepPlano(1, "entrada", "main.py")],
+            scratchpad={"main.py": "def quebrado(\n"},
+        )
+        assert _validar_projeto_gerado(sessao)
+
+    def test_scaffold_offline_usa_template(self):
+        sessao = _criar_scaffold_offline("CLI Python para gerenciar tarefas")
+
+        assert sessao.concluida is False
+        assert sessao.projeto_validado is False
+        assert "main.py" in sessao.scratchpad
+        assert _validar_projeto_gerado(sessao) == []
 
 
 class TestExtrairCodigo:
@@ -82,7 +105,10 @@ class TestParsePlano:
         assert sessao.plano[0].descricao == "Criar main"
 
     def test_json_com_dependencias(self):
-        raw = '{"steps": [{"descricao": "A", "arquivo": "a.py", "dependencias": []}, {"descricao": "B", "arquivo": "b.py", "dependencias": ["a.py"]}]}'
+        raw = (
+            '{"steps": [{"descricao": "A", "arquivo": "a.py", "dependencias": []},'
+            ' {"descricao": "B", "arquivo": "b.py", "dependencias": ["a.py"]}]}'
+        )
         sessao = _parse_plano("teste", raw)
         assert len(sessao.plano) == 2
         assert sessao.plano[1].dependencias == ["a.py"]

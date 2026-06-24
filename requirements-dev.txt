@@ -1,5 +1,5 @@
 # Dependências de desenvolvimento
--r requirements.txt
+-r requirements-api.txt
 
 pytest>=8.0,<10.0
 pytest-mock>=3.12,<4.0

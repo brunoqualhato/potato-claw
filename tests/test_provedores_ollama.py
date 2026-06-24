@@ -6,7 +6,7 @@ from src.provedores.ollama_provider import OllamaProvider
 
 @patch("src.provedores.ollama_provider.ollama")
 def test_chat_sem_stream_retorna_resposta(mock_ollama):
-    mock_ollama.chat.return_value = {
+    mock_ollama.Client.return_value.chat.return_value = {
         "message": {"content": "resposta teste"},
         "prompt_eval_count": 7,
         "eval_count": 3,
@@ -21,14 +21,39 @@ def test_chat_sem_stream_retorna_resposta(mock_ollama):
 
 @patch("src.provedores.ollama_provider.ollama")
 def test_chat_passa_num_ctx_e_num_thread_nas_options(mock_ollama):
-    mock_ollama.chat.return_value = {"message": {"content": "x"}}
+    mock_ollama.Client.return_value.chat.return_value = {"message": {"content": "x"}}
     p = OllamaProvider()
     p.chat("m", "s", [{"role": "user", "content": "oi"}], stream=False,
            num_ctx=1024, num_thread=4, keep_alive="0s")
-    _, kwargs = mock_ollama.chat.call_args
+    _, kwargs = mock_ollama.Client.return_value.chat.call_args
     assert kwargs["options"]["num_ctx"] == 1024
     assert kwargs["options"]["num_thread"] == 4
     assert kwargs["keep_alive"] == "0s"
+
+
+@patch("src.provedores.ollama_provider.ollama")
+def test_chat_aplica_num_thread_padrao_quando_ausente(mock_ollama):
+    from src.core.config import NUM_THREAD
+
+    mock_ollama.Client.return_value.chat.return_value = {"message": {"content": "x"}}
+    p = OllamaProvider()
+    p.chat("m", "s", [{"role": "user", "content": "oi"}], stream=False)
+    _, kwargs = mock_ollama.Client.return_value.chat.call_args
+    assert kwargs["options"]["num_thread"] == NUM_THREAD
+
+
+@patch("src.provedores.ollama_provider.ollama")
+def test_chat_aplica_timeout_padrao_e_customizado(mock_ollama):
+    from src.core.config import OLLAMA_TIMEOUT
+
+    mock_ollama.Client.return_value.chat.return_value = {"message": {"content": "x"}}
+    p = OllamaProvider()
+
+    p.chat("m", "s", [{"role": "user", "content": "oi"}], stream=False)
+    assert mock_ollama.Client.call_args.kwargs["timeout"] == OLLAMA_TIMEOUT
+
+    p.chat("m", "s", [{"role": "user", "content": "oi"}], stream=False, timeout=5)
+    assert mock_ollama.Client.call_args.kwargs["timeout"] == 5
 
 
 @patch("src.provedores.ollama_provider.ollama")

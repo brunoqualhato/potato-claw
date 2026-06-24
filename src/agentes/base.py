@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from src.agentes.executor import SistemaAgentes
+    pass
 
 
 @dataclass(slots=True)
