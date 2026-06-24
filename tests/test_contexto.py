@@ -9,6 +9,15 @@ def test_identidade_inclui_nome_e_modelo_ativo():
     assert "local" in ident.lower()
 
 
+def test_identidade_fixa_origem_open_source():
+    """Identidade deve cobrir 'quem te criou' para o modelo nao vazar a base
+    ('fui criado pela equipe Gemma'). Fica claro que e projeto open source local."""
+    ident = contexto.identidade().lower()
+    assert "origem" in ident
+    assert "open source" in ident or "código aberto" in ident
+    assert "motor" in ident  # o modelo base e so o motor, nao a identidade
+
+
 def test_montar_system_prompt_prefixa_identidade():
     prompt = contexto.montar_system_prompt("Voce e um programador.")
     assert "potato-claw" in prompt
