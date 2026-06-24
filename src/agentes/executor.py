@@ -110,8 +110,9 @@ class SistemaAgentes:
         """
         inicio = time.time()
 
-        # Caminho barato primeiro: ferramenta determinística e cache não
-        # precisam carregar coordenador nem modelo de embeddings.
+        # Ferramentas determinísticas podem rodar antes da análise de intenção.
+        # O cache só é consultado depois, quando sabemos se a pergunta exige
+        # dados atuais (`precisa_web`).
         pergunta, self._acao_local_confirmada = remover_confirmacao(pergunta)
         resultado_preflight = self._preflight_deterministico(
             nome_agente, pergunta, inicio
@@ -191,18 +192,6 @@ class SistemaAgentes:
                 pergunta, resultado_ferramenta, agente_heuristico, nivel=1, inicio=inicio
             )
             return resultado_ferramenta
-
-        # Busca exata não depende de embeddings. Tenta primeiro o agente mais
-        # provável e depois o agente solicitado para preservar compatibilidade.
-        agentes_cache = dict.fromkeys((agente_heuristico, nome_agente))
-        for agente_cache in agentes_cache:
-            resposta_cache = self.cache.buscar(f"{agente_cache}:{pergunta}")
-            if resposta_cache:
-                console.print("[dim]📋 Nível 1 • Cache[/dim]")
-                console.print(resposta_cache, style="green")
-                self._registrar_execucao(agente_cache, 1, "cache")
-                self._salvar_metrica(agente_cache, 1, inicio, fonte="cache")
-                return resposta_cache
 
         return None
 

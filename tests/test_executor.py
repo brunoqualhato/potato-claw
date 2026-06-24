@@ -76,8 +76,8 @@ class TestPipelineNivel1:
         assert "Hora:" in resultado or "Data:" in resultado
 
     @patch("src.core.analisador.ollama")
-    def test_cache_hit_retorna_sem_llm(self, mock_ollama, sistema_mock):
-        """Cache hit retorna resposta sem chamar LLM novamente."""
+    def test_cache_hit_retorna_apos_classificar_frescor(self, mock_ollama, sistema_mock):
+        """Cache hit só ocorre após confirmar que a pergunta não exige dados atuais."""
         mock_ollama.chat.return_value = {
             "message": {
                 "content": '{"agente":"generalista","precisa_web":false,"ferramenta":null,"parametros":{}}'
@@ -89,7 +89,40 @@ class TestPipelineNivel1:
 
         resultado = sistema_mock.executar("generalista", "como usar docker compose")
         assert resultado == "Use docker-compose up"
-        mock_ollama.chat.assert_not_called()
+        mock_ollama.chat.assert_called_once()
+
+    @patch("src.core.analisador.ollama")
+    @patch("src.agentes.executor.pesquisar_web_rapida", return_value="dados novos")
+    @patch("src.agentes.executor.chamar_llm")
+    def test_cache_nao_antecipa_consulta_que_precisa_web(
+        self, mock_llm, _mock_web, mock_ollama, sistema_mock
+    ):
+        sistema_mock.cache.salvar(
+            "pesquisador:qual a versão do pacote example",
+            "versão antiga",
+            "pesquisador",
+        )
+        mock_ollama.chat.return_value = {
+            "message": {
+                "content": (
+                    '{"agente":"pesquisador","precisa_web":true,'
+                    '"ferramenta":null,"parametros":{}}'
+                )
+            }
+        }
+        mock_llm.return_value = {
+            "resposta": "versão nova",
+            "tempo_ms": 10,
+            "tokens_entrada": 1,
+            "tokens_saida": 1,
+            "erro": False,
+        }
+
+        resultado = sistema_mock.executar(
+            "generalista", "qual a versão do pacote example"
+        )
+
+        assert resultado == "versão nova"
 
     @patch("src.core.analisador.ollama")
     def test_ferramenta_deterministica_nao_carrega_coordenador(self, mock_ollama, sistema_mock):
