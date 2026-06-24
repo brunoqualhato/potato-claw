@@ -1,4 +1,5 @@
 import asyncio
+
 from src.conexoes.bus import MessageBus, OutboundMessage
 from src.conexoes.channels.cli import CLIChannel
 

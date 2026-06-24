@@ -2,9 +2,12 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 
 from src.conexoes.bus import MessageBus, OutboundMessage
 from src.conexoes.channels.base import BaseChannel
+
+logger = logging.getLogger(__name__)
 
 
 class ChannelManager:
@@ -52,6 +55,12 @@ class ChannelManager:
                     entregue = True
                     break
                 except Exception:
+                    logger.exception(
+                        "Falha ao entregar mensagem no canal %s (tentativa %s/%s)",
+                        msg.canal,
+                        tentativa + 1,
+                        max_retries,
+                    )
                     if tentativa < max_retries - 1:
                         await asyncio.sleep(base_delay * (2 ** tentativa))
             if not entregue:

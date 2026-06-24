@@ -2,11 +2,14 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Callable
 
 from src.conexoes.bus import InboundMessage, MessageBus, OutboundMessage
 
 Processador = Callable[[str, str], str]
+logger = logging.getLogger(__name__)
+ERRO_PROCESSAMENTO = "Ops, tive um problema ao processar isso. Pode tentar de novo?"
 
 
 def _processador_padrao() -> Processador:
@@ -28,7 +31,15 @@ class Runtime:
         self.agente_padrao = "generalista"
 
     async def processar_uma(self, msg: InboundMessage) -> OutboundMessage:
-        resposta = await asyncio.to_thread(self._processar, self.agente_padrao, msg.texto)
+        try:
+            resposta = await asyncio.to_thread(self._processar, self.agente_padrao, msg.texto)
+        except Exception:
+            logger.exception(
+                "Erro ao processar mensagem (canal=%s chat=%s)",
+                msg.canal,
+                msg.chat_id,
+            )
+            resposta = ERRO_PROCESSAMENTO
         out = OutboundMessage(texto=resposta, canal=msg.canal, chat_id=msg.chat_id)
         await self._bus.publicar_saida(out)
         return out
@@ -36,4 +47,7 @@ class Runtime:
     async def rodar(self) -> None:
         while True:
             msg = await self._bus.proxima_entrada()
-            await self.processar_uma(msg)
+            try:
+                await self.processar_uma(msg)
+            except Exception:
+                logger.exception("Erro no loop do runtime; mensagem ignorada")

@@ -1,7 +1,8 @@
 import pytest
+
 from src.conexoes.bus import MessageBus, OutboundMessage
-from src.conexoes.channels.base import BaseChannel
 from src.conexoes.channels import registry
+from src.conexoes.channels.base import BaseChannel
 
 
 class _Falso(BaseChannel):

@@ -1,5 +1,6 @@
 import asyncio
-from src.conexoes.bus import MessageBus, InboundMessage, OutboundMessage, SenderInfo
+
+from src.conexoes.bus import InboundMessage, MessageBus, OutboundMessage, SenderInfo
 
 
 def test_inbound_roundtrip():

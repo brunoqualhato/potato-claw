@@ -1,6 +1,7 @@
 import asyncio
-from src.conexoes.bus import MessageBus, InboundMessage, OutboundMessage, SenderInfo
-from src.conexoes.runtime import Runtime
+
+from src.conexoes.bus import InboundMessage, MessageBus, OutboundMessage, SenderInfo
+from src.conexoes.runtime import ERRO_PROCESSAMENTO, Runtime
 
 
 def test_processar_uma_gera_outbound():
@@ -29,3 +30,23 @@ def test_processar_uma_gera_outbound():
     assert out.chat_id == "c1"
     assert len(recebidas) == 1
     assert recebidas[0].texto == "eco: oi"
+
+
+def test_processar_uma_responde_erro_sem_propagar():
+    async def cenario():
+        bus = MessageBus()
+
+        def falhar(_agente, _pergunta):
+            raise RuntimeError("boom")
+
+        rt = Runtime(bus, falhar)
+        msg = InboundMessage(
+            texto="oi",
+            sender=SenderInfo(id="u1"),
+            canal="cli",
+            chat_id="c1",
+        )
+        return await rt.processar_uma(msg)
+
+    out = asyncio.run(cenario())
+    assert out.texto == ERRO_PROCESSAMENTO

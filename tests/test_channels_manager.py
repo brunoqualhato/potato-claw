@@ -1,4 +1,5 @@
 import asyncio
+
 from src.conexoes.bus import MessageBus, OutboundMessage
 from src.conexoes.channels.base import BaseChannel
 from src.conexoes.channels.manager import ChannelManager
