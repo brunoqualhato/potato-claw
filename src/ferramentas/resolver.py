@@ -188,6 +188,19 @@ def criar_arquivo(caminho: str, conteudo: str) -> str:
         return f"Erro ao criar arquivo: {e}"
 
 
+def comando_permitido(comando: str) -> bool:
+    """True se o primeiro token do comando e um binario da allowlist. Serve para
+    decidir se a string e um comando de verdade ou se o classificador confundiu
+    uma pergunta natural (ex.: "qual modelo voce usa?" -> "Qual") com um comando."""
+    try:
+        partes = shlex.split(comando.strip())
+    except ValueError:
+        return False
+    if not partes:
+        return False
+    return Path(partes[0]).name in COMANDOS_PERMITIDOS
+
+
 def executar_comando_local(comando: str) -> str:
     """Executa comando shell no diretório do projeto com allowlist."""
     comando_limpo = comando.strip()

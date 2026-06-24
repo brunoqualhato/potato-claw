@@ -36,6 +36,7 @@ from src.core.llm import chamar_llm, resumir_conversa, verificar_modelo_disponiv
 from src.ferramentas.resolver import (
     _extrair_local_hora,
     calcular,
+    comando_permitido,
     criar_arquivo,
     executar_comando_local,
     executar_ferramentas,
@@ -507,7 +508,9 @@ class SistemaAgentes:
 
         if intencao.ferramenta == "comando":
             comando = params.get("comando", "")
-            if comando:
+            # So executa se o primeiro token e um binario permitido. Senao (ex.:
+            # "qual modelo voce usa?" -> comando "Qual"), cai pro LLM responder.
+            if comando and comando_permitido(comando):
                 return executar_comando_local(comando)
             return None
 

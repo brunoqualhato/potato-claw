@@ -5,11 +5,26 @@ import pytest
 from src.ferramentas.resolver import (
     _RESPOSTAS_SAUDACAO,
     calcular,
+    comando_permitido,
     executar_ferramentas,
     verificar_ferramenta_calculo,
     verificar_ferramenta_data,
     verificar_ferramenta_saudacao,
 )
+
+
+class TestComandoPermitido:
+    def test_binario_permitido(self):
+        assert comando_permitido("ls -la") is True
+        assert comando_permitido("echo oi") is True
+
+    def test_pergunta_natural_nao_e_comando(self):
+        assert comando_permitido("Qual modelo de IA") is False
+        assert comando_permitido("Como você funciona") is False
+
+    def test_vazio_ou_invalido(self):
+        assert comando_permitido("") is False
+        assert comando_permitido('aspas "abertas') is False
 
 
 class TestCalcular:

@@ -90,6 +90,26 @@ class TestPipelineNivel1:
         )
         assert resultado is None
 
+    def test_pergunta_natural_nao_vira_comando_shell(self, sistema_mock):
+        """'qual modelo voce usa?' classificado como comando NAO deve tentar
+        executar 'Qual' - cai pro LLM em vez de expor a allowlist."""
+        from src.core.analisador import IntencaoAnalisada
+        intencao = IntencaoAnalisada(
+            ferramenta="comando", parametros={"comando": "Qual modelo de IA"}
+        )
+        resultado = sistema_mock._executar_ferramenta_por_intencao(
+            intencao, "qual modelo de IA você usa?"
+        )
+        assert resultado is None
+
+    def test_comando_valido_continua_executando(self, sistema_mock):
+        """Comando real (binario permitido) ainda executa."""
+        from src.core.analisador import IntencaoAnalisada
+        intencao = IntencaoAnalisada(ferramenta="comando", parametros={"comando": "echo oi"})
+        resultado = sistema_mock._executar_ferramenta_por_intencao(intencao, "rode echo oi")
+        assert resultado is not None
+        assert "oi" in resultado
+
     def test_calculo_real_continua_funcionando(self, sistema_mock):
         """Calculo de verdade nao e afetado pela salvaguarda de geracao de codigo."""
         from src.core.analisador import IntencaoAnalisada
