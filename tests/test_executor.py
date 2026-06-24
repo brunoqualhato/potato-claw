@@ -77,6 +77,27 @@ class TestPipelineNivel1:
         assert resultado is not None
         assert sistema_mock.cache.buscar("generalista:oi") is None
 
+    def test_pedido_de_codigo_nao_vira_calculo(self, sistema_mock):
+        """'escreva uma função que soma' NAO deve cair na ferramenta calculo
+        (o modelo pequeno confunde geracao de codigo com calculo). Retorna None
+        e o pipeline promove pro LLM (que gera o codigo)."""
+        from src.core.analisador import IntencaoAnalisada
+        intencao = IntencaoAnalisada(
+            agente="programador", ferramenta="calculo", parametros={"expressao": "2+3"}
+        )
+        resultado = sistema_mock._executar_ferramenta_por_intencao(
+            intencao, "escreva uma função python que soma dois numeros"
+        )
+        assert resultado is None
+
+    def test_calculo_real_continua_funcionando(self, sistema_mock):
+        """Calculo de verdade nao e afetado pela salvaguarda de geracao de codigo."""
+        from src.core.analisador import IntencaoAnalisada
+        intencao = IntencaoAnalisada(ferramenta="calculo", parametros={"expressao": "15*8"})
+        resultado = sistema_mock._executar_ferramenta_por_intencao(intencao, "quanto é 15 * 8")
+        assert resultado is not None
+        assert "120" in resultado
+
     @patch("src.core.analisador.ollama")
     def test_ferramenta_data_hora(self, mock_ollama, sistema_mock):
         """Data/hora resolve no nível 1."""

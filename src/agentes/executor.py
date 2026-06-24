@@ -53,9 +53,21 @@ from src.memoria.sqlite import Memoria
 logger = logging.getLogger(__name__)
 console = Console()
 
-# Ferramentas cuja resposta NAO deve ir pro cache: saudacao (variada a cada vez)
-# e data_hora (muda com o tempo). Cachear congelaria uma resposta volatil.
-_FERRAMENTAS_VOLATEIS = frozenset({"saudacao", "data_hora"})
+# Sinais de que o usuario quer GERAR codigo/texto, nao calcular um numero.
+# O modelo pequeno as vezes classifica "escreva uma funcao que soma" como
+# "calculo" e responde "Resultado: 5". Estes sinais bloqueiam essa confusao.
+_SINAIS_GERACAO = (
+    "função", "funcao", "function", "código", "codigo", "code", "script",
+    "programa", "classe", " def ", "algoritmo", "implement", "escreva",
+    "escrever", "crie um", "criar um", "gere um", "gerar um", "faça um", "faca um",
+)
+
+
+def _pede_geracao_de_codigo(pergunta: str) -> bool:
+    """True quando a pergunta pede para gerar codigo/texto (vai pro LLM, nunca
+    para a ferramenta de calculo)."""
+    p = f" {pergunta.lower()} "
+    return any(sinal in p for sinal in _SINAIS_GERACAO)
 
 
 class SistemaAgentes:
@@ -200,14 +212,15 @@ class SistemaAgentes:
             console.print(
                 Panel(resultado_ferramenta, title="⚡ Nível 1 • Ferramenta", border_style="cyan")
             )
-            # Ferramentas volateis (saudacao/data_hora) nao vao pro cache.
-            cachear = intencao.ferramenta not in _FERRAMENTAS_VOLATEIS
+            # Ferramentas (calculo/data/saudacao/arquivo/comando) NAO vao pro cache:
+            # recomputar e barato e sempre correto, e cachear a pergunta inteira
+            # envenena quando o classificador erra (ex.: "escreva uma funcao que
+            # soma" -> calculo -> "Resultado: 5" ficava cravado no cache).
             self._salvar(pergunta, resultado_ferramenta, nome_agente, nivel=1,
-                         inicio=inicio, cachear=cachear)
+                         inicio=inicio, cachear=False)
             return resultado_ferramenta, []
 
-        # 1b. Fallback: ferramentas heurísticas (saudacao/data/calculo - baratas,
-        # nao vale cachear; saudacao e data sao volateis).
+        # 1b. Fallback: ferramentas heurísticas (baratas; mesmo motivo: nao cachear).
         resultado_heuristico = executar_ferramentas(pergunta)
         if resultado_heuristico:
             console.print(
@@ -462,6 +475,10 @@ class SistemaAgentes:
             return obter_data_hora()
 
         if intencao.ferramenta == "calculo":
+            # Salvaguarda: "escreva uma funcao que soma" NAO e calculo. Pedido
+            # de geracao de codigo cai pro LLM (retorna None aqui).
+            if _pede_geracao_de_codigo(pergunta):
+                return None
             expressao = params.get("expressao", "")
             if expressao:
                 resultado = calcular(expressao)
@@ -627,11 +644,11 @@ class SistemaAgentes:
 
         self.memoria.salvar_mensagem("user", pergunta)
         self.memoria.salvar_mensagem("assistant", resposta, agente, nivel)
-        # Cacheia apenas respostas DETERMINISTICAS e ESTAVEIS (nivel 1: ferramentas
-        # como calculo). Respostas conversacionais (nivel 2/3) dependem do historico:
-        # cachea-las por (agente, pergunta) faria "qual meu nome?" retornar uma
-        # resposta velha, ignorando o contexto. E ferramentas volateis (saudacao,
-        # variada; data_hora, muda no tempo) passam cachear=False - senao congelam.
+        # O cache exato por (agente, pergunta) so guarda nivel 1 quando cachear=True.
+        # Respostas conversacionais (nivel 2/3) dependem do historico - cachea-las
+        # faria "qual meu nome?" retornar resposta velha. E as ferramentas passam
+        # cachear=False: recomputar e barato e nao corre o risco de uma classificacao
+        # errada (ex.: pedido de codigo virando calculo) ficar cravada no cache.
         if nivel == 1 and cachear:
             self.cache.salvar(f"{agente}:{pergunta}", resposta, agente)
         self.semantica.adicionar(pergunta, resposta, agente)
