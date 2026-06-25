@@ -66,6 +66,8 @@ class Cache:
 
     @staticmethod
     def _consulta_base(pergunta: str) -> str:
+        if "\x1f" in pergunta:
+            _, pergunta = pergunta.split("\x1f", 1)
         if ":" in pergunta:
             return pergunta.split(":", 1)[1].strip().lower()
         return pergunta.strip().lower()

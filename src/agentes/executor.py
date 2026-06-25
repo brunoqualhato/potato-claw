@@ -195,6 +195,15 @@ class SistemaAgentes:
 
         return None
 
+    def _sessao_ativa(self) -> str:
+        return getattr(self.memoria, "sessao_ativa", "") or ""
+
+    def _cache_key(self, agente: str, pergunta: str) -> str:
+        sessao = self._sessao_ativa()
+        if not sessao:
+            return f"{agente}:{pergunta}"
+        return f"{sessao}\x1f{agente}:{pergunta}"
+
     # ══════════════════════════════════════════════════════════════
     # ANÁLISE E ROTEAMENTO
     # ══════════════════════════════════════════════════════════════
@@ -269,7 +278,7 @@ class SistemaAgentes:
             return resultado_ferramenta, []
 
         # 1b. Cache exato — ignorado se precisa de dados frescos
-        cache_key = f"{nome_agente}:{pergunta}"
+        cache_key = self._cache_key(nome_agente, pergunta)
         resposta_cache = None if intencao.precisa_web else self.cache.buscar(cache_key)
         if resposta_cache:
             console.print("[dim]📋 Nível 1 • Cache[/dim]")
@@ -279,7 +288,9 @@ class SistemaAgentes:
             return resposta_cache, []
 
         # 1c. ChromaDB — busca semântica
-        docs_similares = self.semantica.buscar_similar(pergunta)
+        docs_similares = self.semantica.buscar_similar(
+            pergunta, sessao=self._sessao_ativa()
+        )
         if docs_similares and nivel == 1 and not intencao.precisa_web:
             melhor = docs_similares[0]
             score = melhor.get("score_hibrido", melhor["similaridade"])
@@ -694,9 +705,14 @@ class SistemaAgentes:
 
         self.memoria.salvar_mensagem("user", pergunta)
         self.memoria.salvar_mensagem("assistant", resposta, agente, nivel)
-        cache_key = f"{agente}:{pergunta}"
+        cache_key = self._cache_key(agente, pergunta)
         self.cache.salvar(cache_key, resposta, agente)
-        self.semantica.adicionar(pergunta, resposta, agente)
+        self.semantica.adicionar(
+            pergunta,
+            resposta,
+            agente,
+            metadata={"sessao": self._sessao_ativa()},
+        )
 
     def _salvar_confirmacao(
         self, pergunta: str, resposta: str, agente: str, inicio: float

@@ -7,8 +7,8 @@ from collections.abc import Callable
 
 from src.conexoes.bus import InboundMessage, MessageBus, OutboundMessage
 
-Processador = Callable[[str, str], str]
 logger = logging.getLogger(__name__)
+Processador = Callable[[str, str, str], str]
 ERRO_PROCESSAMENTO = "Ops, tive um problema ao processar isso. Pode tentar de novo?"
 
 
@@ -18,7 +18,9 @@ def _processador_padrao() -> Processador:
 
     sistema = SistemaAgentes()
 
-    def processar(nome_agente: str, pergunta: str) -> str:
+    def processar(nome_agente: str, pergunta: str, sessao: str = "") -> str:
+        # Isola o historico por sessao (canal:pessoa) em multi-user. "" = global.
+        sistema.memoria.sessao_ativa = sessao
         return sistema.executar(nome_agente, pergunta)
 
     return processar
@@ -50,8 +52,11 @@ class Runtime:
         typing_task = None
         if self._manager is not None:
             typing_task = asyncio.create_task(self._loop_typing(msg.canal, msg.chat_id))
+        sessao = f"{msg.canal}:{msg.sender.id}"
         try:
-            resposta = await asyncio.to_thread(self._processar, self.agente_padrao, msg.texto)
+            resposta = await asyncio.to_thread(
+                self._processar, self.agente_padrao, msg.texto, sessao
+            )
         except Exception:
             logger.exception(
                 "Erro ao processar mensagem (canal=%s chat=%s)",

@@ -129,6 +129,7 @@ class MemoriaSemantica:
         pergunta: str,
         top_k: int = CHROMADB_TOP_K,
         tipos: tuple[str, ...] | None = None,
+        sessao: str | None = None,
     ) -> list[dict]:
         """
         Busca documentos similares.
@@ -151,11 +152,21 @@ class MemoriaSemantica:
                 if total == 0:
                     continue
 
-                results = collection.query(
-                    query_embeddings=[embedding],
-                    n_results=min(top_k, total),
-                    include=["documents", "metadatas", "distances"],
-                )
+                query_kwargs = {
+                    "query_embeddings": [embedding],
+                    "n_results": min(top_k, total),
+                    "include": ["documents", "metadatas", "distances"],
+                }
+                if tipo == "conversa" and sessao is not None:
+                    if sessao:
+                        query_kwargs["where"] = {"sessao": sessao}
+                    else:
+                        # Bancos antigos não possuem o metadado `sessao`.
+                        # Consulta os candidatos e filtra abaixo sem expor
+                        # conversas de sessões nomeadas ao modo global/CLI.
+                        query_kwargs["n_results"] = total
+
+                results = collection.query(**query_kwargs)
 
                 for i, doc in enumerate(results["documents"][0]):
                     distancia = results["distances"][0][i]
@@ -167,6 +178,12 @@ class MemoriaSemantica:
                         metadata = results["metadatas"][0][i] or {}
                         tipo_doc = metadata.get("tipo")
                         if tipo_doc and tipo_doc not in tipos_busca:
+                            continue
+                        if (
+                            tipo == "conversa"
+                            and sessao is not None
+                            and metadata.get("sessao", "") != sessao
+                        ):
                             continue
                         documentos.append({
                             "conteudo": doc,
@@ -192,7 +209,9 @@ class MemoriaSemantica:
             documento = f"Pergunta: {pergunta}\nResposta: {resposta}"
 
             # Deduplicação: hash baseado no conteúdo (sem timestamp)
-            doc_id = hashlib.sha256(pergunta.strip().lower().encode()).hexdigest()[:16]
+            sessao = (metadata or {}).get("sessao", "")
+            identidade = f"{sessao}\0{pergunta.strip().lower()}"
+            doc_id = hashlib.sha256(identidade.encode()).hexdigest()[:16]
 
             # Se já existe um doc com mesmo ID, verifica se vale atualizar
             existing = self.collection.get(ids=[doc_id])
@@ -206,6 +225,7 @@ class MemoriaSemantica:
             meta = {
                 "agente": agente,
                 "tipo": "conversa",
+                "sessao": sessao,
                 "criado_em": datetime.now().isoformat(),
             }
             if metadata:
