@@ -862,27 +862,44 @@ def executar_projeto(
     # ─── FINALIZAÇÃO ───
     sessao.tempo_total_ms = int((time.time() - inicio_total) * 1000)
 
-    # Passada de coerência: verifica imports cruzados e corrige
+    # Passada de coerência: verifica imports cruzados e corrige (sem LLM)
     _passada_coerencia(sessao)
 
+    # Validação final do projeto como um todo
     problemas_projeto = _validar_projeto_gerado(sessao)
+
+    # ─── AUTO-CORREÇÃO FINAL ───
+    # Se a validação encontrou problemas, tenta corrigir os arquivos com defeito
     if problemas_projeto:
-        sessao.projeto_validado = False
-        sessao.erros.extend(f"Validação final: {p}" for p in problemas_projeto)
         console.print(
-            f"[yellow]⚠️ Validação final encontrou {len(problemas_projeto)} problema(s).[/yellow]"
+            f"[yellow]⚠️ Validação encontrou {len(problemas_projeto)} problema(s). "
+            f"Tentando auto-correção...[/yellow]"
         )
+        problemas_restantes = _autocorrecao_projeto(sessao, problemas_projeto)
+        if problemas_restantes:
+            sessao.projeto_validado = False
+            sessao.erros.extend(f"Validação final: {p}" for p in problemas_restantes)
+            console.print(
+                f"[yellow]⚠️ {len(problemas_restantes)} problema(s) "
+                f"não resolvidos após auto-correção.[/yellow]"
+            )
+        else:
+            sessao.projeto_validado = True
+            console.print("[green]🧪 Auto-correção resolveu todos os problemas.[/green]")
     else:
         sessao.projeto_validado = True
         console.print("[green]🧪 Smoke checks do projeto passaram.[/green]")
+
     _salvar_projeto_completo(semantica, sessao)
 
     if salvar_disco and sessao.scratchpad and sessao.projeto_validado:
         caminho = _exportar_disco(sessao, diretorio_saida)
         console.print(f"\n[bold green]📁 Salvo em: {caminho}[/bold green]")
     elif salvar_disco and sessao.scratchpad:
+        # Exporta mesmo com problemas, mas avisa
+        caminho = _exportar_disco(sessao, diretorio_saida)
         console.print(
-            "[yellow]📁 Exportação bloqueada: corrija os problemas da validação final.[/yellow]"
+            f"[yellow]📁 Salvo em: {caminho} (com problemas pendentes)[/yellow]"
         )
 
     # [8] Limpa persistência se concluiu
@@ -901,6 +918,193 @@ def executar_projeto(
     ))
 
     return sessao
+
+
+# ══════════════════════════════════════════════════════════════
+# AUTO-CORREÇÃO FINAL DO PROJETO
+# ══════════════════════════════════════════════════════════════
+
+_PROMPT_CORRECAO_FINAL = (
+    "O projeto gerado tem problemas. Corrija o arquivo abaixo.\n"
+    "Gere o ARQUIVO INTEIRO corrigido. Sem explicações."
+)
+
+MAX_RODADAS_AUTOCORRECAO = 2
+
+
+def _autocorrecao_projeto(sessao: SessaoCodigo, problemas: list[str]) -> list[str]:
+    """
+    Tenta corrigir o projeto automaticamente após validação final.
+
+    Estratégia:
+    1. Mapeia cada problema ao arquivo responsável
+    2. Regenera cada arquivo com defeito via LLM (com contexto dos problemas)
+    3. Re-valida após correção
+    4. Repete até MAX_RODADAS ou sem problemas
+
+    Retorna lista de problemas restantes (vazia = tudo corrigido).
+    """
+    for rodada in range(MAX_RODADAS_AUTOCORRECAO):
+        # Tenta correção determinística primeiro (sem LLM)
+        corrigidos_det = _correcao_deterministica(sessao, problemas)
+        if corrigidos_det:
+            console.print(f"  [dim]🔧 Rodada {rodada + 1}: {corrigidos_det} corrigido(s) (heurística)[/dim]")
+
+        # Identifica arquivos com problema que precisam de LLM
+        arquivos_problema = _mapear_problemas_para_arquivos(sessao, problemas)
+
+        for arquivo, erros_arquivo in arquivos_problema.items():
+            if arquivo not in sessao.scratchpad:
+                continue
+
+            console.print(f"  [dim]🔄 Corrigindo {arquivo}...[/dim]")
+            codigo_corrigido = _regenerar_arquivo(sessao, arquivo, erros_arquivo)
+
+            if codigo_corrigido:
+                # Valida sintaxe antes de aceitar
+                if arquivo.endswith(".py"):
+                    valido, _ = _validar_sintaxe(codigo_corrigido, arquivo)
+                    if not valido:
+                        continue  # Rejeita correção com erro de sintaxe
+
+                sessao.scratchpad[arquivo] = codigo_corrigido
+                console.print(f"  [green]  ✅ {arquivo} corrigido[/green]")
+
+        # Refaz coerência e re-valida
+        _passada_coerencia(sessao)
+        problemas = _validar_projeto_gerado(sessao)
+
+        if not problemas:
+            return []
+
+        console.print(f"  [dim]  Restam {len(problemas)} problema(s) após rodada {rodada + 1}[/dim]")
+
+    return problemas
+
+
+def _correcao_deterministica(sessao: SessaoCodigo, problemas: list[str]) -> int:
+    """
+    Correções que não precisam de LLM. Retorna quantidade de correções aplicadas.
+    """
+    corrigidos = 0
+
+    for problema in problemas:
+        # requirements.txt com código → regenera
+        if "requirements.txt" in problema and (
+            "código" in problema.lower() or "contém" in problema.lower()
+        ):
+            if "requirements.txt" in sessao.scratchpad:
+                sessao.scratchpad["requirements.txt"] = _gerar_requirements_deterministico(sessao)
+                corrigidos += 1
+
+        # Ponto de entrada executável não identificado → ignora (pode ser nome diferente)
+        if "ponto de entrada" in problema.lower():
+            # Verifica se algum .py tem if __name__
+            for arq, codigo in sessao.scratchpad.items():
+                if arq.endswith(".py") and "__name__" in codigo and "main" not in arq:
+                    # Renomeia no scratchpad — cria alias main.py
+                    pass  # Não faz sentido renomear, aceita como está
+
+    return corrigidos
+
+
+def _mapear_problemas_para_arquivos(
+    sessao: SessaoCodigo, problemas: list[str]
+) -> dict[str, list[str]]:
+    """
+    Mapeia problemas para os arquivos que precisam ser corrigidos.
+    Retorna {arquivo: [problemas_do_arquivo]}.
+    """
+    mapa: dict[str, list[str]] = {}
+
+    for problema in problemas:
+        # Tenta extrair nome de arquivo do problema
+        arquivo_encontrado = None
+        for arq in sessao.scratchpad:
+            if arq in problema:
+                arquivo_encontrado = arq
+                break
+
+        # Se não encontrou arquivo explícito, analisa o tipo de problema
+        if not arquivo_encontrado:
+            if "compileall" in problema or "SyntaxError" in problema:
+                # Erro de compilação — tenta achar o .py mencionado
+                for arq in sessao.scratchpad:
+                    if arq.endswith(".py") and arq.split("/")[-1] in problema:
+                        arquivo_encontrado = arq
+                        break
+            elif "ponto de entrada" in problema.lower():
+                # Pode ser que falta o main.py ou app.py
+                pontos = {"main.py", "app.py", "index.js"}
+                arquivo_encontrado = next(
+                    (f for f in sessao.scratchpad if f in pontos), None
+                )
+
+        if arquivo_encontrado:
+            mapa.setdefault(arquivo_encontrado, []).append(problema)
+        else:
+            # Problema global — aplica ao ponto de entrada
+            pontos = {"main.py", "app.py", "index.js", "server.js"}
+            entrada = next((f for f in sessao.scratchpad if f in pontos), None)
+            if entrada:
+                mapa.setdefault(entrada, []).append(problema)
+
+    return mapa
+
+
+def _regenerar_arquivo(
+    sessao: SessaoCodigo, arquivo: str, erros: list[str]
+) -> str | None:
+    """
+    Regenera um arquivo específico via LLM com contexto dos erros.
+    Retorna código corrigido ou None se falhou.
+    """
+    codigo_atual = sessao.scratchpad.get(arquivo, "")
+
+    # Para tipos simples, usa correção determinística
+    if arquivo == "requirements.txt":
+        return _gerar_requirements_deterministico(sessao)
+
+    if arquivo.lower() == "readme.md":
+        return _gerar_readme_deterministico(sessao)
+
+    # Para código, usa LLM com contexto dos erros e dos outros módulos
+    prompt_tipo = _prompt_por_tipo(arquivo, sessao.objetivo)
+
+    # Monta contexto mínimo: objetivo + módulos relevantes
+    contexto_partes = [f"PROJETO: {sessao.objetivo}"]
+
+    # Inclui assinaturas dos outros módulos para manter integração
+    for outro_arq, outro_codigo in sessao.scratchpad.items():
+        if outro_arq == arquivo or outro_arq.endswith((".md", ".txt", ".css")):
+            continue
+        assinatura = _truncar_inteligente(outro_codigo, 400)
+        contexto_partes.append(f"MÓDULO ({outro_arq}):\n{assinatura}")
+
+    contexto_partes.append(
+        "PROBLEMAS ENCONTRADOS:\n" + "\n".join(f"- {e}" for e in erros)
+    )
+    contexto_partes.append(
+        f"CÓDIGO ATUAL DE {arquivo} (com problemas):\n```\n{codigo_atual[:1500]}\n```"
+    )
+    contexto_partes.append(f"Gere {arquivo} CORRIGIDO e COMPLETO:")
+
+    contexto = "\n\n".join(contexto_partes)
+
+    try:
+        response = ollama.chat(
+            model=MODELOS["coder"],
+            messages=[
+                {"role": "system", "content": prompt_tipo},
+                {"role": "user", "content": contexto},
+            ],
+            options={"temperature": 0.2, "num_predict": 4096},
+            stream=False,
+        )
+        return _extrair_codigo(response["message"]["content"].strip())
+    except Exception as e:
+        console.print(f"  [red]  Erro ao corrigir {arquivo}: {e}[/red]")
+        return None
 
 
 def _executar_step_com_validacao(
