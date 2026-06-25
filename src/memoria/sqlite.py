@@ -1,8 +1,10 @@
 """
 Camada 3 de memória: SQLite.
 Histórico, resumos, contexto persistente e métricas.
+Batch commits para reduzir I/O em disco lento.
 """
 
+import atexit
 import logging
 import sqlite3
 import statistics
@@ -14,15 +16,32 @@ logger = logging.getLogger(__name__)
 
 
 class Memoria:
-    """Memória persistente com SQLite."""
+    """Memória persistente com SQLite e batch commits."""
 
     def __init__(self, arquivo: str = MEMORIA_ARQUIVO):
-        # A API executa o pipeline em worker thread para não bloquear o event loop.
-        # O lock da aplicação serializa o acesso ao estado compartilhado.
         self.conn = sqlite3.connect(arquivo, check_same_thread=False)
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA synchronous=NORMAL")
+        self._pendente = False
         self._criar_tabelas()
+        atexit.register(self._flush)
+
+    def _flush(self):
+        """Persiste transações pendentes."""
+        if self._pendente:
+            try:
+                self.conn.commit()
+                self._pendente = False
+            except Exception as e:
+                logger.debug("Erro no flush SQLite: %s", e)
+
+    def _commit_batch(self):
+        """Marca operação pendente sem forçar commit imediato."""
+        self._pendente = True
+
+    def flush(self):
+        """Flush explícito — chamado no final de cada turno pelo executor."""
+        self._flush()
 
     def _criar_tabelas(self):
         self.conn.executescript("""
@@ -62,7 +81,7 @@ class Memoria:
             "INSERT INTO historico (papel, conteudo, agente, nivel, criado_em) VALUES (?, ?, ?, ?, ?)",
             (papel, conteudo, agente, nivel, datetime.now().isoformat()),
         )
-        self.conn.commit()
+        self._commit_batch()
 
     def ultimas_mensagens(self, n: int = 3) -> list[dict]:
         cursor = self.conn.execute(
@@ -80,7 +99,7 @@ class Memoria:
             "INSERT INTO resumos (resumo, criado_em) VALUES (?, ?)",
             (resumo, datetime.now().isoformat()),
         )
-        self.conn.commit()
+        self._commit_batch()
 
     def ultimo_resumo(self) -> str | None:
         cursor = self.conn.execute(
@@ -95,7 +114,7 @@ class Memoria:
                VALUES (?, ?, ?)""",
             (chave, valor, datetime.now().isoformat()),
         )
-        self.conn.commit()
+        self._commit_batch()
 
     def obter_contexto(self, chave: str) -> str | None:
         cursor = self.conn.execute(
@@ -115,7 +134,7 @@ class Memoria:
                VALUES (?, ?, ?, ?, ?, ?, ?)""",
             (agente, nivel, tempo_ms, tokens_entrada, tokens_saida, fonte, datetime.now().isoformat()),
         )
-        self.conn.commit()
+        self._commit_batch()
 
     def metricas_resumo(self) -> dict:
         cursor = self.conn.execute(
@@ -151,7 +170,8 @@ class Memoria:
 
     def limpar_historico(self):
         self.conn.execute("DELETE FROM historico")
-        self.conn.commit()
+        self.conn.commit()  # Operação destrutiva: commit imediato
 
     def fechar(self):
+        self._flush()
         self.conn.close()

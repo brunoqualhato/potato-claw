@@ -2,8 +2,10 @@
 Camada 1 de memória: Cache exato (JSON) com LRU.
 Hash da pergunta → resposta instantânea.
 Eviction policy: máximo 500 entradas, remove as menos usadas.
+Dirty-write: acumula mudanças em memória e persiste periodicamente ou no shutdown.
 """
 
+import atexit
 import hashlib
 import json
 import logging
@@ -15,16 +17,19 @@ from src.core.config import CACHE_ARQUIVO, CACHE_HABILITADO
 logger = logging.getLogger(__name__)
 
 CACHE_MAX_ENTRADAS = 500  # Limite para não crescer indefinidamente
+_FLUSH_INTERVAL = 10       # Persiste após N operações de escrita
 
 
 class Cache:
-    """Cache de respostas com LRU eviction para controlar RAM."""
+    """Cache de respostas com LRU eviction e dirty-write para reduzir I/O."""
 
     def __init__(self, arquivo: str = CACHE_ARQUIVO):
         self.arquivo = Path(arquivo)
         self.dados: dict[str, dict] = {}
         self._dirty = False
+        self._ops_desde_flush = 0
         self._carregar()
+        atexit.register(self._flush)
 
     def _carregar(self):
         if self.arquivo.exists():
@@ -34,8 +39,10 @@ class Cache:
                 logger.warning("Cache corrompido, iniciando vazio: %s", e)
                 self.dados = {}
 
-    def _salvar(self):
-        """Escrita atômica: write → rename para evitar corrupção."""
+    def _flush(self):
+        """Persiste dados se houve mudanças. Chamado periodicamente e no shutdown."""
+        if not self._dirty:
+            return
         try:
             self.arquivo.parent.mkdir(parents=True, exist_ok=True)
             tmp = self.arquivo.with_suffix(".tmp")
@@ -44,8 +51,16 @@ class Cache:
             )
             tmp.replace(self.arquivo)  # Atômico no mesmo filesystem
             self._dirty = False
+            self._ops_desde_flush = 0
         except OSError as e:
             logger.warning("Erro ao salvar cache: %s", e)
+
+    def _marcar_dirty(self):
+        """Marca como sujo e faz flush se acumulou operações suficientes."""
+        self._dirty = True
+        self._ops_desde_flush += 1
+        if self._ops_desde_flush >= _FLUSH_INTERVAL:
+            self._flush()
 
     def _evict_se_necessario(self):
         """Remove entradas LRU se exceder tamanho máximo."""
@@ -104,8 +119,7 @@ class Cache:
         if entry:
             entry["hits"] = entry.get("hits", 0) + 1
             entry["ultimo_uso"] = datetime.now().isoformat()
-            self._dirty = True
-            self._salvar()
+            self._marcar_dirty()
             return entry["resposta"]
         return None
 
@@ -123,11 +137,11 @@ class Cache:
             "ultimo_uso": datetime.now().isoformat(),
         }
         self._evict_se_necessario()
-        self._salvar()
+        self._marcar_dirty()
 
     def limpar(self):
         self.dados = {}
-        self._salvar()
+        self._flush()
 
     def estatisticas(self) -> dict:
         total = len(self.dados)

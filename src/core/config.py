@@ -161,7 +161,7 @@ OLLAMA_TIMEOUT = int(os.environ.get("NEURON_OLLAMA_TIMEOUT", "120"))
 # num_ctx por nível (janela de contexto = KV cache = RAM). Menor no nível rápido.
 NUM_CTX_NIVEL = {
     2: int(os.environ.get("NEURON_NUM_CTX_RAPIDO", "2048")),
-    3: int(os.environ.get("NEURON_NUM_CTX_PROFUNDO", "4096")),
+    3: int(os.environ.get("NEURON_NUM_CTX_PROFUNDO", "3072")),
 }
 # Janela mínima para chamadas auxiliares (classificação de intenção, resumo).
 NUM_CTX_AUXILIAR = int(os.environ.get("NEURON_NUM_CTX_AUXILIAR", "1024"))

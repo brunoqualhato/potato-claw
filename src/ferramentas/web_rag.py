@@ -55,7 +55,7 @@ logger = logging.getLogger(__name__)
 
 MAX_PAGINAS_FETCH = WEB_RAG_MAX_PAGINAS
 FETCH_TIMEOUT_S = WEB_RAG_FETCH_TIMEOUT
-MAX_HTML_BYTES = 512_000       # ~500KB máx por página (evita PDFs gigantes)
+MAX_HTML_BYTES = 300_000       # ~300KB máx por página (reduzido para poupar RAM em HW fraco)
 MAX_MD_CHARS = WEB_RAG_MAX_MD_CHARS
 MAX_CONTEXTO_TOTAL = 4000      # Chars totais enviados para a LLM extratora
 MODELO_EXTRATOR = MODELOS["rapido"]  # LLM barata para extração

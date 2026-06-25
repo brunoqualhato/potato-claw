@@ -41,7 +41,34 @@ class MemoriaSemantica:
     def __init__(self):
         if self._inicializado:
             return
-        self.client = chromadb.PersistentClient(path=CHROMADB_DIR)
+        self._client = None
+        self._collections = None
+        self._collection = None
+        self._embedding_disponivel = None
+        self._inicializado = True
+
+    @property
+    def client(self):
+        """Lazy init: só conecta ao ChromaDB quando realmente necessário."""
+        if self._client is None:
+            self._client = chromadb.PersistentClient(path=CHROMADB_DIR)
+            self._init_collections()
+        return self._client
+
+    @property
+    def collections(self):
+        if self._collections is None:
+            _ = self.client  # Força init
+        return self._collections
+
+    @property
+    def collection(self):
+        if self._collection is None:
+            _ = self.client  # Força init
+        return self._collection
+
+    def _init_collections(self):
+        """Inicializa coleções (chamado apenas no primeiro acesso)."""
         nomes = {
             "conversa": CHROMADB_COLLECTION,
             "conhecimento": f"{CHROMADB_COLLECTION}_conhecimento",
@@ -50,18 +77,15 @@ class MemoriaSemantica:
             "codigo_gerado": f"{CHROMADB_COLLECTION}_codigo",
             "arquitetura": f"{CHROMADB_COLLECTION}_codigo",
         }
-        self.collections = {
-            tipo: self.client.get_or_create_collection(
+        self._collections = {
+            tipo: self._client.get_or_create_collection(
                 name=nome,
                 metadata={"hnsw:space": "cosine"},
             )
             for tipo, nome in nomes.items()
         }
         # Compatibilidade com integrações existentes: conversa é a coleção padrão.
-        self.collection = self.collections["conversa"]
-        self._migrar_tipos_legados()
-        self._embedding_disponivel = None
-        self._inicializado = True
+        self._collection = self._collections["conversa"]
 
     @classmethod
     def resetar_instancia(cls):
@@ -79,29 +103,6 @@ class MemoriaSemantica:
             logger.debug("Modelo de embedding '%s' indisponível: %s", EMBEDDING_MODEL, e)
             self._embedding_disponivel = False
         return self._embedding_disponivel
-
-    def _migrar_tipos_legados(self):
-        """Move documentos tipados que versões antigas gravavam na coleção padrão."""
-        try:
-            total = self.collection.count()
-            if total == 0:
-                return
-            dados = self.collection.get(include=["documents", "metadatas", "embeddings"])
-            for indice, doc_id in enumerate(dados["ids"]):
-                metadata = (dados.get("metadatas") or [])[indice] or {}
-                tipo = metadata.get("tipo", "conversa")
-                destino = self.collections.get(tipo)
-                if tipo == "conversa" or destino is None or destino.name == self.collection.name:
-                    continue
-                destino.upsert(
-                    ids=[doc_id],
-                    documents=[dados["documents"][indice]],
-                    embeddings=[dados["embeddings"][indice]],
-                    metadatas=[metadata],
-                )
-                self.collection.delete(ids=[doc_id])
-        except Exception as e:
-            logger.debug("Migração de memória legada ignorada: %s", e)
 
     def _gerar_embedding(self, texto: str) -> list[float]:
         """Gera embedding usando Ollama."""

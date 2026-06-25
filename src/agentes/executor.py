@@ -278,9 +278,9 @@ class SistemaAgentes:
             self._registrar_execucao(nome_agente, 1, "cache")
             return resposta_cache, []
 
-        # 1c. ChromaDB — busca semântica
-        docs_similares = self.semantica.buscar_similar(pergunta)
-        if docs_similares and nivel == 1 and not intencao.precisa_web:
+        # 1c. ChromaDB — busca semântica (skip se já sabemos que precisa web)
+        docs_similares = [] if intencao.precisa_web else self.semantica.buscar_similar(pergunta)
+        if docs_similares and nivel == 1:
             melhor = docs_similares[0]
             score = melhor.get("score_hibrido", melhor["similaridade"])
             if score >= CHROMADB_NIVEL1_THRESHOLD:
@@ -364,26 +364,33 @@ class SistemaAgentes:
         Self-correction loop: tenta corrigir resposta fraca no mesmo modelo.
         Custo: ~80-150ms com modelo 1.2B. Evita promoção desnecessária ao nível 3.
         """
-        try:
-            import ollama
-            response = ollama.chat(
-                model=modelo,
-                messages=[
-                    {"role": "system", "content": (
-                        "Sua resposta anterior foi vaga ou incompleta."
-                        " Responda novamente de forma precisa e direta."
-                    )},
-                    {"role": "user", "content": pergunta},
-                    {"role": "assistant", "content": resposta_fraca},
-                    {"role": "user", "content": "Responda melhor, com dados concretos. Seja específico."},
-                ],
-                options={"temperature": 0.3, "num_predict": 512},
-            )
-            corrigida = response["message"]["content"].strip()
-            if corrigida and len(corrigida) > len(resposta_fraca) * 0.5:
-                return corrigida
-        except Exception as e:
-            logger.debug("Autocorreção falhou: %s", e)
+        from src.core.config import KEEP_ALIVE_EFEMERO, NUM_CTX_AUXILIAR
+
+        resultado = chamar_llm(
+            modelo=modelo,
+            system_prompt=(
+                "Sua resposta anterior foi vaga ou incompleta."
+                " Responda novamente de forma precisa e direta."
+            ),
+            mensagens=[
+                {"role": "user", "content": pergunta},
+                {"role": "assistant", "content": resposta_fraca},
+                {"role": "user", "content": "Responda melhor, com dados concretos. Seja específico."},
+            ],
+            stream=False,
+            max_tokens=512,
+            temperatura=0.3,
+            num_ctx=NUM_CTX_AUXILIAR,
+            keep_alive=KEEP_ALIVE_EFEMERO,
+        )
+
+        if resultado["erro"]:
+            logger.debug("Autocorreção falhou")
+            return None
+
+        corrigida = resultado["resposta"].strip()
+        if corrigida and len(corrigida) > len(resposta_fraca) * 0.5:
+            return corrigida
         return None
 
     # ══════════════════════════════════════════════════════════════
@@ -437,8 +444,9 @@ class SistemaAgentes:
 
         resposta_final = agente_obj.pos_execucao(pergunta, resultado["resposta"])
 
-        # Resumo automático a cada 10 mensagens
-        if self.memoria.total_mensagens() % 10 == 0:
+        # Resumo automático: só gera se histórico cresceu e resumo está velho
+        total_msgs = self.memoria.total_mensagens()
+        if total_msgs > 0 and total_msgs % 15 == 0 and not self.memoria.ultimo_resumo():
             self._gerar_resumo(agente_cfg["modelo_rapido"])
 
         # Salva classificação como bem-sucedida para few-shot futuro
@@ -690,6 +698,7 @@ class SistemaAgentes:
         if resposta.startswith("Erro ao chamar modelo") or resposta.startswith("Erro"):
             self.memoria.salvar_mensagem("user", pergunta)
             self._salvar_metrica(agente, nivel, inicio, fonte="erro")
+            self.memoria.flush()
             return
 
         self.memoria.salvar_mensagem("user", pergunta)
@@ -697,6 +706,7 @@ class SistemaAgentes:
         cache_key = f"{agente}:{pergunta}"
         self.cache.salvar(cache_key, resposta, agente)
         self.semantica.adicionar(pergunta, resposta, agente)
+        self.memoria.flush()
 
     def _salvar_confirmacao(
         self, pergunta: str, resposta: str, agente: str, inicio: float
@@ -705,6 +715,7 @@ class SistemaAgentes:
         self.memoria.salvar_mensagem("user", pergunta)
         self.memoria.salvar_mensagem("assistant", resposta, agente, 1)
         self._salvar_metrica(agente, 1, inicio, fonte="confirmacao")
+        self.memoria.flush()
 
     def _salvar_metrica(self, agente: str, nivel: int, inicio: float,
                         tokens_in: int = 0, tokens_out: int = 0, fonte: str = ""):
