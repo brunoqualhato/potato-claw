@@ -11,7 +11,9 @@ Endpoints:
 
 from __future__ import annotations
 
+import logging
 import os
+import secrets
 import threading
 from asyncio import to_thread
 from contextlib import asynccontextmanager
@@ -22,6 +24,8 @@ from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, Field
 
 from src.agentes.executor import SistemaAgentes
+
+logger = logging.getLogger(__name__)
 
 # ══════════════════════════════════════════════════════════════
 # AUTENTICAÇÃO
@@ -40,7 +44,8 @@ async def verificar_api_key(api_key: str | None = Security(_api_key_header)):
         # Sem chave configurada → acesso livre (dev local)
         return None
 
-    if not api_key or api_key != _API_KEY:
+    # compare_digest evita timing attack na comparação da chave.
+    if not api_key or not secrets.compare_digest(api_key, _API_KEY):
         raise HTTPException(
             status_code=401,
             detail="API key inválida ou ausente. Envie header X-API-Key.",
@@ -59,6 +64,11 @@ _lock = threading.Lock()  # Thread-safety para estado compartilhado
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     global _sistema
+    if not _API_KEY:
+        logger.warning(
+            "NEURON_API_KEY não definida: a API está SEM autenticação. "
+            "Defina NEURON_API_KEY antes de expor em rede (ex.: --host 0.0.0.0)."
+        )
     _sistema = SistemaAgentes()
     yield
     if _sistema:
@@ -143,4 +153,11 @@ async def stats(_: str | None = Depends(verificar_api_key)):
     """Métricas de performance."""
     if not _sistema:
         raise HTTPException(status_code=503, detail="Sistema não inicializado")
-    return _sistema.estatisticas()
+
+    # Lê sob o mesmo lock das escritas (/chat), em thread, para não correr com
+    # mutações de cache/SQLite no estado compartilhado.
+    def ler():
+        with _lock:
+            return _sistema.estatisticas()
+
+    return await to_thread(ler)
