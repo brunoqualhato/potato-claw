@@ -61,16 +61,14 @@ class TestAutenticacao:
         assert exc.value.status_code == 401
 
 
-def test_stats_le_sob_lock(monkeypatch):
-    """Comprova que estatisticas() roda sob o _lock e fora do event loop
-    (via to_thread): captura o estado do lock e a thread no momento da leitura."""
+def test_stats_roda_fora_do_event_loop(monkeypatch):
+    """Estatísticas não bloqueiam o event loop durante leituras de disco."""
     import threading
 
     capturado = {}
     main_thread = threading.get_ident()
 
     def estatisticas():
-        capturado["lock_ativo"] = api._lock.locked()
         capturado["thread"] = threading.get_ident()
         return {"total": 1}
 
@@ -82,6 +80,4 @@ def test_stats_le_sob_lock(monkeypatch):
 
     assert resultado == {"total": 1}
     sistema.estatisticas.assert_called_once()
-    # ponto central da correção: leitura serializada pelo _lock, em worker thread.
-    assert capturado["lock_ativo"] is True
     assert capturado["thread"] != main_thread

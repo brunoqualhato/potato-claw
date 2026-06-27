@@ -21,14 +21,14 @@ from __future__ import annotations
 import json
 import logging
 
-import ollama
-
 from src.core.config import (
     COORDENADOR_MODELO,
     KEEP_ALIVE_EFEMERO,
+    KEEP_ALIVE_PRINCIPAL,
+    MODELOS,
     NUM_CTX_AUXILIAR,
-    NUM_THREAD,
 )
+from src.core.llm import chamar_llm
 
 logger = logging.getLogger(__name__)
 
@@ -156,24 +156,32 @@ def analisar_intencao(pergunta: str, modelo: str = COORDENADOR_MODELO) -> Intenc
         exemplos = _obter_exemplos_dinamicos(pergunta)
         prompt_completo = _PROMPT_ANALISAR + exemplos
 
-        response = ollama.chat(
-            model=modelo,
-            messages=[
-                {"role": "system", "content": prompt_completo},
+        keep_alive = (
+            KEEP_ALIVE_PRINCIPAL
+            if modelo == MODELOS["rapido"]
+            else KEEP_ALIVE_EFEMERO
+        )
+        resultado = chamar_llm(
+            modelo=modelo,
+            system_prompt=prompt_completo,
+            mensagens=[
                 {"role": "user", "content": pergunta},
             ],
-            format="json",
-            options={
-                "temperature": 0.05,
-                "num_predict": 120,
-                "num_thread": NUM_THREAD,
-                "num_ctx": NUM_CTX_AUXILIAR,
-            },
-            # Modelo auxiliar: solta da RAM logo após classificar (não fica
-            # residente competindo memória com o modelo de resposta).
-            keep_alive=KEEP_ALIVE_EFEMERO,
+            stream=False,
+            max_tokens=120,
+            temperatura=0.05,
+            num_ctx=NUM_CTX_AUXILIAR,
+            keep_alive=keep_alive,
+            formato="json",
         )
-        raw = response["message"]["content"].strip()
+        # Aceita também o envelope legado do SDK para manter integrações locais
+        # que injetam um cliente compatível durante a migração de providers.
+        if "message" in resultado:
+            raw = resultado["message"]["content"].strip()
+        else:
+            if resultado["erro"]:
+                raise RuntimeError(resultado["resposta"])
+            raw = resultado["resposta"].strip()
         return _parse_resposta(raw)
 
     except Exception as e:

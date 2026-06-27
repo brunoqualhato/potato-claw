@@ -46,3 +46,4 @@ def test_modelo_disponivel_lista():
     p = OllamaProvider(client=client)
     assert p.modelo_disponivel("qwen3:1.7b") is True
     assert p.modelo_disponivel("inexistente") is False
+    assert client.list.call_count == 1

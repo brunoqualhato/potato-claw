@@ -39,12 +39,15 @@ from ddgs import DDGS
 
 from src.core.config import (
     DATA_DIR,
+    KEEP_ALIVE_PRINCIPAL,
     MODELOS,
+    NUM_CTX_AUXILIAR,
     WEB_RAG_CACHE_TTL,
     WEB_RAG_FETCH_TIMEOUT,
     WEB_RAG_MAX_MD_CHARS,
     WEB_RAG_MAX_PAGINAS,
 )
+from src.core.llm import chamar_llm
 
 logger = logging.getLogger(__name__)
 
@@ -314,8 +317,6 @@ def extrair_fatos(
     A LLM extratora NÃO responde a pergunta — ela apenas filtra ruído.
     Isso permite que a LLM final trabalhe com dados limpos.
     """
-    import ollama
-
     # Monta contexto compacto para a extratora
     contexto_docs = ""
     chars_total = 0
@@ -335,10 +336,10 @@ def extrair_fatos(
         return ""
 
     try:
-        response = ollama.chat(
-            model=modelo,
-            messages=[
-                {"role": "system", "content": _PROMPT_EXTRATOR},
+        resultado = chamar_llm(
+            modelo=modelo,
+            system_prompt=_PROMPT_EXTRATOR,
+            mensagens=[
                 {
                     "role": "user",
                     "content": (
@@ -347,14 +348,22 @@ def extrair_fatos(
                     ),
                 },
             ],
-            options={"temperature": 0.1, "num_predict": 400},
+            stream=False,
+            max_tokens=400,
+            temperatura=0.1,
+            num_ctx=NUM_CTX_AUXILIAR,
+            # O extrator usa o mesmo modelo do nível rápido; mantê-lo residente
+            # evita descarregar e recarregar antes da resposta final.
+            keep_alive=KEEP_ALIVE_PRINCIPAL,
         )
-        resultado = response["message"]["content"].strip()
+        if resultado["erro"]:
+            raise RuntimeError(resultado["resposta"])
+        texto_extraido = resultado["resposta"].strip()
 
-        if "SEM_INFO" in resultado.upper():
+        if "SEM_INFO" in texto_extraido.upper():
             return ""
 
-        return resultado
+        return texto_extraido
     except Exception:
         # Fallback: retorna os primeiros chars do markdown bruto
         return contexto_docs[:1500]

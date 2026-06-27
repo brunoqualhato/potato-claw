@@ -8,6 +8,7 @@ import ollama
 from rich.console import Console
 
 from src.core.config import NUM_CTX_AUXILIAR, NUM_THREAD, OLLAMA_TIMEOUT
+from src.core.recursos import SEMAFORO_OLLAMA
 from src.provedores.base import LLMProvider, RespostaLLM
 
 console = Console()
@@ -18,6 +19,10 @@ class OllamaProvider(LLMProvider):
 
     def __init__(self, client=None) -> None:
         self._client = client or ollama.Client(timeout=OLLAMA_TIMEOUT)
+        # Uma inferência por vez protege máquinas com pouca RAM. O semáforo fica
+        # somente em torno do Ollama; cache, web e persistência continuam concorrentes.
+        self._inferencia = SEMAFORO_OLLAMA
+        self._modelos_cache: tuple[float, set[str]] = (0.0, set())
 
     def chat(
         self,
@@ -32,6 +37,7 @@ class OllamaProvider(LLMProvider):
         num_thread: int | None = None,
         keep_alive: str | None = None,
         timeout: float | None = None,
+        formato: str | None = None,
         on_token: Callable[[str], None] | None = None,
     ) -> RespostaLLM:
         msgs = [{"role": "system", "content": system_prompt}]
@@ -48,39 +54,45 @@ class OllamaProvider(LLMProvider):
         extra: dict = {}
         if keep_alive is not None:
             extra["keep_alive"] = keep_alive
+        if formato is not None:
+            extra["format"] = formato
 
         inicio = time.time()
-        resposta = ""
+        partes: list[str] = []
+        cauda = ""
         tokens_in = 0
         tokens_out = 0
         erro = False
 
         try:
-            if stream:
-                for chunk in self._client.chat(
-                    model=modelo, messages=msgs, stream=True, options=options, **extra
-                ):
-                    texto = chunk["message"]["content"]
-                    resposta += texto
-                    if on_token is not None:
-                        on_token(texto)
-                    else:
-                        console.print(texto, end="", style="green")
-                    if "eval_count" in chunk:
-                        tokens_out = chunk["eval_count"]
-                    if "prompt_eval_count" in chunk:
-                        tokens_in = chunk["prompt_eval_count"]
-                    if len(resposta) > 300 and resposta[-150:] == resposta[-300:-150]:
-                        if on_token is None:
-                            console.print("\n[dim]⚠️ Repetição detectada, parando.[/dim]")
-                        break
-                if on_token is None:
-                    console.print()
-            else:
-                r = self._client.chat(model=modelo, messages=msgs, options=options, **extra)
-                resposta = r["message"]["content"]
-                tokens_in = r.get("prompt_eval_count", 0)
-                tokens_out = r.get("eval_count", 0)
+            with self._inferencia:
+                if stream:
+                    for chunk in self._client.chat(
+                        model=modelo, messages=msgs, stream=True, options=options, **extra
+                    ):
+                        texto = chunk["message"]["content"]
+                        partes.append(texto)
+                        cauda = (cauda + texto)[-300:]
+                        if on_token is not None:
+                            on_token(texto)
+                        else:
+                            console.print(texto, end="", style="green")
+                        if "eval_count" in chunk:
+                            tokens_out = chunk["eval_count"]
+                        if "prompt_eval_count" in chunk:
+                            tokens_in = chunk["prompt_eval_count"]
+                        if len(cauda) == 300 and cauda[-150:] == cauda[:150]:
+                            if on_token is None:
+                                console.print("\n[dim]⚠️ Repetição detectada, parando.[/dim]")
+                            break
+                    if on_token is None:
+                        console.print()
+                    resposta = "".join(partes)
+                else:
+                    r = self._client.chat(model=modelo, messages=msgs, options=options, **extra)
+                    resposta = r["message"]["content"]
+                    tokens_in = r.get("prompt_eval_count", 0)
+                    tokens_out = r.get("eval_count", 0)
         except Exception as e:
             erro = True
             resposta = f"Erro ao chamar modelo {modelo}: {e}"
@@ -96,16 +108,19 @@ class OllamaProvider(LLMProvider):
 
     def modelo_disponivel(self, modelo: str) -> bool:
         try:
-            resposta = self._client.list()
-            nomes_raw: list[str] = []
-            if isinstance(resposta, dict):
-                for m in resposta.get("models", []):
-                    if isinstance(m, dict):
-                        nomes_raw.append(m.get("name") or m.get("model") or "")
-            elif hasattr(resposta, "models"):
-                for m in getattr(resposta, "models", []):
-                    nomes_raw.append(getattr(m, "model", "") or getattr(m, "name", ""))
-            nomes = {n.strip().lower() for n in nomes_raw if n}
+            expiracao, nomes = self._modelos_cache
+            if time.monotonic() >= expiracao:
+                resposta = self._client.list()
+                nomes_raw: list[str] = []
+                if isinstance(resposta, dict):
+                    for m in resposta.get("models", []):
+                        if isinstance(m, dict):
+                            nomes_raw.append(m.get("name") or m.get("model") or "")
+                elif hasattr(resposta, "models"):
+                    for m in getattr(resposta, "models", []):
+                        nomes_raw.append(getattr(m, "model", "") or getattr(m, "name", ""))
+                nomes = {n.strip().lower() for n in nomes_raw if n}
+                self._modelos_cache = (time.monotonic() + 30.0, nomes)
             nomes_base = {n.split(":", 1)[0] for n in nomes}
             alvo = modelo.strip().lower()
             alvo_base = alvo.split(":", 1)[0]
@@ -128,19 +143,20 @@ class OllamaProvider(LLMProvider):
                 continue
             vistos.add(modelo)
             try:
-                if funcao == "embedding":
-                    ollama.embeddings(model=modelo, prompt="warmup")
-                else:
-                    self._client.chat(
-                        model=modelo,
-                        messages=[{"role": "user", "content": "oi"}],
-                        options={
-                            "num_predict": 1,
-                            "num_ctx": NUM_CTX_AUXILIAR,
-                            "num_thread": NUM_THREAD,
-                        },
-                        keep_alive=keep_alive,
-                    )
+                with self._inferencia:
+                    if funcao == "embedding":
+                        ollama.embeddings(model=modelo, prompt="warmup")
+                    else:
+                        self._client.chat(
+                            model=modelo,
+                            messages=[{"role": "user", "content": "oi"}],
+                            options={
+                                "num_predict": 1,
+                                "num_ctx": NUM_CTX_AUXILIAR,
+                                "num_thread": NUM_THREAD,
+                            },
+                            keep_alive=keep_alive,
+                        )
                 console.print(f"  [dim]🔥 {modelo} carregado[/dim]")
             except Exception:
                 pass

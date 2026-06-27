@@ -1,6 +1,9 @@
 """Testes para o analisador de intenção (parsing de JSON, sem Ollama)."""
 
-from src.core.analisador import _parse_resposta
+from unittest.mock import patch
+
+from src.core.analisador import _parse_resposta, analisar_intencao
+from src.core.config import KEEP_ALIVE_PRINCIPAL
 
 
 class TestParseResposta:
@@ -60,3 +63,18 @@ class TestParseResposta:
         raw = '{"agente":"generalista","precisa_web":false,"ferramenta":null,"parametros":"invalido"}'
         r = _parse_resposta(raw)
         assert r.parametros == {}
+
+
+@patch("src.core.analisador._obter_exemplos_dinamicos", return_value="")
+@patch("src.core.analisador.chamar_llm")
+def test_analisador_mantem_modelo_rapido_residente(mock_llm, _mock_exemplos):
+    mock_llm.return_value = {
+        "resposta": '{"agente":"generalista","precisa_web":false,"ferramenta":null,"parametros":{}}',
+        "erro": False,
+    }
+
+    analisar_intencao("explique cache")
+
+    kwargs = mock_llm.call_args.kwargs
+    assert kwargs["keep_alive"] == KEEP_ALIVE_PRINCIPAL
+    assert kwargs["formato"] == "json"

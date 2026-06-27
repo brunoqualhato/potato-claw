@@ -35,6 +35,7 @@ def chamar_llm(
     temperatura: float = 0.7,
     num_ctx: int | None = None,
     keep_alive: str | None = KEEP_ALIVE_PRINCIPAL,
+    formato: str | None = None,
     on_token: Callable[[str], None] | None = None,
 ) -> dict:
     resultado = _provider.chat(
@@ -48,6 +49,7 @@ def chamar_llm(
         num_thread=NUM_THREAD,
         keep_alive=keep_alive,
         timeout=OLLAMA_TIMEOUT,
+        formato=formato,
         on_token=on_token,
     )
     return {

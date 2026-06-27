@@ -32,17 +32,20 @@ class LiteLLMProvider(LLMProvider):
         num_thread: int | None = None,
         keep_alive: str | None = None,
         timeout: float | None = None,
+        formato: str | None = None,
         on_token: Callable[[str], None] | None = None,
     ) -> RespostaLLM:
         litellm = self._lib()
         msgs = [{"role": "system", "content": system_prompt}, *mensagens]
         inicio = time.time()
+        extra = {"response_format": {"type": "json_object"}} if formato == "json" else {}
         resp = litellm.completion(
             model=modelo,
             messages=msgs,
             max_tokens=max_tokens,
             temperature=temperatura,
             timeout=timeout,
+            **extra,
         )
         texto = resp["choices"][0]["message"]["content"]
         usage = resp.get("usage", {}) or {}

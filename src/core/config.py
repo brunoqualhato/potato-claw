@@ -157,6 +157,9 @@ WARMUP_MODELOS = os.environ.get("NEURON_WARMUP_MODELOS", "rapido")
 
 # Timeout duro para não pendurar o processo quando o modelo trava sob pressão de RAM.
 OLLAMA_TIMEOUT = int(os.environ.get("NEURON_OLLAMA_TIMEOUT", "120"))
+MAX_INFERENCIAS_OLLAMA = max(
+    1, int(os.environ.get("NEURON_MAX_INFERENCIAS_OLLAMA", "1"))
+)
 
 # num_ctx por nível (janela de contexto = KV cache = RAM). Menor no nível rápido.
 NUM_CTX_NIVEL = {
