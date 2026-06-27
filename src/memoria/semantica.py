@@ -6,7 +6,10 @@ Busca por similaridade vetorial usando embeddings locais.
 import hashlib
 import logging
 import re
+import threading
+from collections import OrderedDict
 from datetime import datetime
+from functools import wraps
 
 import chromadb
 import ollama as ollama_client
@@ -18,8 +21,17 @@ from src.core.config import (
     CHROMADB_TOP_K,
     EMBEDDING_MODEL,
 )
+from src.core.recursos import SEMAFORO_OLLAMA
 
 logger = logging.getLogger(__name__)
+
+
+def _sincronizado(metodo):
+    @wraps(metodo)
+    def wrapper(self, *args, **kwargs):
+        with self._operacao_lock:
+            return metodo(self, *args, **kwargs)
+    return wrapper
 
 
 class MemoriaSemantica:
@@ -45,6 +57,9 @@ class MemoriaSemantica:
         self._collections = None
         self._collection = None
         self._embedding_disponivel = None
+        self._embedding_cache: OrderedDict[str, list[float]] = OrderedDict()
+        self._embedding_lock = threading.Lock()
+        self._operacao_lock = threading.RLock()
         self._inicializado = True
 
     @property
@@ -97,7 +112,8 @@ class MemoriaSemantica:
         if self._embedding_disponivel is not None:
             return self._embedding_disponivel
         try:
-            ollama_client.embeddings(model=EMBEDDING_MODEL, prompt="teste")
+            with SEMAFORO_OLLAMA:
+                ollama_client.embeddings(model=EMBEDDING_MODEL, prompt="teste")
             self._embedding_disponivel = True
         except Exception as e:
             logger.debug("Modelo de embedding '%s' indisponível: %s", EMBEDDING_MODEL, e)
@@ -105,9 +121,23 @@ class MemoriaSemantica:
         return self._embedding_disponivel
 
     def _gerar_embedding(self, texto: str) -> list[float]:
-        """Gera embedding usando Ollama."""
-        response = ollama_client.embeddings(model=EMBEDDING_MODEL, prompt=texto)
-        return response["embedding"]
+        """Gera embedding usando Ollama, reutilizando consultas recentes."""
+        chave = hashlib.sha256(texto.strip().encode()).hexdigest()
+        with self._embedding_lock:
+            cached = self._embedding_cache.get(chave)
+            if cached is not None:
+                self._embedding_cache.move_to_end(chave)
+                return cached
+
+        with SEMAFORO_OLLAMA:
+            response = ollama_client.embeddings(model=EMBEDDING_MODEL, prompt=texto)
+        embedding = response["embedding"]
+        with self._embedding_lock:
+            self._embedding_cache[chave] = embedding
+            self._embedding_cache.move_to_end(chave)
+            while len(self._embedding_cache) > 128:
+                self._embedding_cache.popitem(last=False)
+        return embedding
 
     @staticmethod
     def _tokenizar(texto: str) -> set[str]:
@@ -125,6 +155,7 @@ class MemoriaSemantica:
             return 0.0
         return intersecao / uniao
 
+    @_sincronizado
     def buscar_similar(
         self,
         pergunta: str,
@@ -184,6 +215,7 @@ class MemoriaSemantica:
             logger.warning("Erro ao buscar similar no ChromaDB: %s", e)
             return []
 
+    @_sincronizado
     def adicionar(self, pergunta: str, resposta: str, agente: str = "", metadata: dict = None):
         """Adiciona par pergunta+resposta ao ChromaDB com deduplicação."""
         if not self._verificar_embedding():
@@ -221,6 +253,7 @@ class MemoriaSemantica:
         except Exception as e:
             logger.warning("Erro ao adicionar ao ChromaDB: %s", e)
 
+    @_sincronizado
     def adicionar_conhecimento(self, texto: str, fonte: str = "", tipo: str = "conhecimento"):
         """Adiciona conhecimento avulso (docs, notas, etc) com deduplicação."""
         if not self._verificar_embedding():
@@ -249,12 +282,14 @@ class MemoriaSemantica:
         except Exception as e:
             logger.warning("Erro ao adicionar conhecimento ao ChromaDB: %s", e)
 
+    @_sincronizado
     def total_documentos(self) -> int:
         return sum(
             collection.count()
             for collection in {collection.name: collection for collection in self.collections.values()}.values()
         )
 
+    @_sincronizado
     def estatisticas(self) -> dict:
         return {
             "documentos": self.total_documentos(),

@@ -8,17 +8,29 @@ import atexit
 import logging
 import sqlite3
 import statistics
+import threading
 from datetime import datetime
+from functools import wraps
 
 from src.core.config import MEMORIA_ARQUIVO
 
 logger = logging.getLogger(__name__)
 
 
+def _sincronizado(metodo):
+    """Serializa o uso da conexão SQLite compartilhada entre worker e indexador."""
+    @wraps(metodo)
+    def wrapper(self, *args, **kwargs):
+        with self._lock:
+            return metodo(self, *args, **kwargs)
+    return wrapper
+
+
 class Memoria:
     """Memória persistente com SQLite e batch commits."""
 
     def __init__(self, arquivo: str = MEMORIA_ARQUIVO):
+        self._lock = threading.RLock()
         self.conn = sqlite3.connect(arquivo, check_same_thread=False)
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA synchronous=NORMAL")
@@ -26,6 +38,7 @@ class Memoria:
         self._criar_tabelas()
         atexit.register(self._flush)
 
+    @_sincronizado
     def _flush(self):
         """Persiste transações pendentes."""
         if self._pendente:
@@ -43,6 +56,7 @@ class Memoria:
         """Flush explícito — chamado no final de cada turno pelo executor."""
         self._flush()
 
+    @_sincronizado
     def _criar_tabelas(self):
         self.conn.executescript("""
             CREATE TABLE IF NOT EXISTS resumos (
@@ -76,6 +90,7 @@ class Memoria:
         """)
         self.conn.commit()
 
+    @_sincronizado
     def salvar_mensagem(self, papel: str, conteudo: str, agente: str | None = None, nivel: int = 0):
         self.conn.execute(
             "INSERT INTO historico (papel, conteudo, agente, nivel, criado_em) VALUES (?, ?, ?, ?, ?)",
@@ -83,6 +98,7 @@ class Memoria:
         )
         self._commit_batch()
 
+    @_sincronizado
     def ultimas_mensagens(self, n: int = 3) -> list[dict]:
         cursor = self.conn.execute(
             "SELECT papel, conteudo, agente FROM historico ORDER BY id DESC LIMIT ?",
@@ -94,6 +110,7 @@ class Memoria:
             for r in reversed(rows)
         ]
 
+    @_sincronizado
     def salvar_resumo(self, resumo: str):
         self.conn.execute(
             "INSERT INTO resumos (resumo, criado_em) VALUES (?, ?)",
@@ -101,6 +118,7 @@ class Memoria:
         )
         self._commit_batch()
 
+    @_sincronizado
     def ultimo_resumo(self) -> str | None:
         cursor = self.conn.execute(
             "SELECT resumo FROM resumos ORDER BY id DESC LIMIT 1"
@@ -108,6 +126,7 @@ class Memoria:
         row = cursor.fetchone()
         return row[0] if row else None
 
+    @_sincronizado
     def definir_contexto(self, chave: str, valor: str):
         self.conn.execute(
             """INSERT OR REPLACE INTO contexto (chave, valor, atualizado_em)
@@ -116,6 +135,7 @@ class Memoria:
         )
         self._commit_batch()
 
+    @_sincronizado
     def obter_contexto(self, chave: str) -> str | None:
         cursor = self.conn.execute(
             "SELECT valor FROM contexto WHERE chave = ?", (chave,)
@@ -123,10 +143,12 @@ class Memoria:
         row = cursor.fetchone()
         return row[0] if row else None
 
+    @_sincronizado
     def total_mensagens(self) -> int:
         cursor = self.conn.execute("SELECT COUNT(*) FROM historico")
         return cursor.fetchone()[0]
 
+    @_sincronizado
     def salvar_metrica(self, agente: str, nivel: int, tempo_ms: int,
                        tokens_entrada: int = 0, tokens_saida: int = 0, fonte: str = ""):
         self.conn.execute(
@@ -136,6 +158,7 @@ class Memoria:
         )
         self._commit_batch()
 
+    @_sincronizado
     def metricas_resumo(self) -> dict:
         cursor = self.conn.execute(
             "SELECT nivel, tempo_ms, tokens_entrada, tokens_saida FROM metricas ORDER BY nivel, tempo_ms"
@@ -158,6 +181,7 @@ class Memoria:
             }
         return resumo
 
+    @_sincronizado
     def metricas_por_fonte(self) -> dict:
         cursor = self.conn.execute(
             """SELECT fonte, COUNT(*), AVG(tempo_ms)
@@ -168,10 +192,12 @@ class Memoria:
             for fonte, total, avg_ms in cursor.fetchall()
         }
 
+    @_sincronizado
     def limpar_historico(self):
         self.conn.execute("DELETE FROM historico")
         self.conn.commit()  # Operação destrutiva: commit imediato
 
+    @_sincronizado
     def fechar(self):
         self._flush()
         self.conn.close()

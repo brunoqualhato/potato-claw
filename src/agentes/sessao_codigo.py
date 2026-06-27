@@ -36,7 +36,14 @@ from rich.console import Console
 from rich.panel import Panel
 
 from src.agentes.templates import obter_esqueleto, selecionar_template
-from src.core.config import DATA_DIR, MODELOS
+from src.core.config import (
+    DATA_DIR,
+    KEEP_ALIVE_PRINCIPAL,
+    MODELOS,
+    NUM_CTX_AUXILIAR,
+    NUM_CTX_NIVEL,
+)
+from src.core.llm import chamar_llm
 from src.memoria.semantica import MemoriaSemantica
 
 console = Console()
@@ -50,6 +57,35 @@ MAX_RETRIES = 2
 MAX_TOKENS_CONTEXTO = 3000     # ~750 tokens — safe para modelos 4K context
 SESSAO_ARQUIVO = DATA_DIR / "sessao_ativa.json"  # [8] Persistência
 PROJETOS_DIR = DATA_DIR / "projetos"
+
+
+def _chat(
+    modelo: str,
+    system_prompt: str,
+    mensagens: list[dict],
+    *,
+    max_tokens: int,
+    temperatura: float,
+    num_ctx: int,
+    formato: str | None = None,
+    on_token=None,
+) -> str:
+    """Aplica timeout, threads e residência de modelo a todo o agent loop."""
+    resultado = chamar_llm(
+        modelo=modelo,
+        system_prompt=system_prompt,
+        mensagens=mensagens,
+        stream=on_token is not None,
+        max_tokens=max_tokens,
+        temperatura=temperatura,
+        num_ctx=num_ctx,
+        keep_alive=KEEP_ALIVE_PRINCIPAL,
+        formato=formato,
+        on_token=on_token,
+    )
+    if resultado["erro"]:
+        raise RuntimeError(resultado["resposta"])
+    return resultado["resposta"].strip()
 
 
 # ══════════════════════════════════════════════════════════════
@@ -628,24 +664,25 @@ def editar_arquivo(sessao: SessaoCodigo, arquivo: str, instrucao: str) -> str:
     conteudo_atual = sessao.scratchpad[arquivo]
 
     try:
-        response = ollama.chat(
-            model=MODELOS["coder"],
-            messages=[
-                {"role": "system", "content": (
+        resposta = _chat(
+            MODELOS["coder"],
+            (
                     "Você recebe um arquivo e uma instrução de edição. "
                     "Retorne o arquivo COMPLETO com a modificação aplicada. "
                     "NÃO retorne apenas o diff — retorne o arquivo inteiro."
-                )},
+            ),
+            [
                 {"role": "user", "content": (
                     f"ARQUIVO ATUAL ({arquivo}):\n```\n{conteudo_atual}\n```\n\n"
                     f"INSTRUÇÃO: {instrucao}\n\n"
                     f"Retorne o arquivo completo editado:"
                 )},
             ],
-            options={"temperature": 0.2, "num_predict": 4096},
-            stream=False,
+            max_tokens=4096,
+            temperatura=0.2,
+            num_ctx=NUM_CTX_NIVEL[3],
         )
-        codigo = _extrair_codigo(response["message"]["content"].strip())
+        codigo = _extrair_codigo(resposta)
 
         # Valida sintaxe antes de aceitar
         if arquivo.endswith(".py"):
@@ -1092,16 +1129,17 @@ def _regenerar_arquivo(
     contexto = "\n\n".join(contexto_partes)
 
     try:
-        response = ollama.chat(
-            model=MODELOS["coder"],
-            messages=[
-                {"role": "system", "content": prompt_tipo},
+        resposta = _chat(
+            MODELOS["coder"],
+            prompt_tipo,
+            [
                 {"role": "user", "content": contexto},
             ],
-            options={"temperature": 0.2, "num_predict": 4096},
-            stream=False,
+            max_tokens=4096,
+            temperatura=0.2,
+            num_ctx=NUM_CTX_NIVEL[3],
         )
-        return _extrair_codigo(response["message"]["content"].strip())
+        return _extrair_codigo(resposta)
     except Exception as e:
         console.print(f"  [red]  Erro ao corrigir {arquivo}: {e}[/red]")
         return None
@@ -1220,27 +1258,26 @@ def _executar_step_streaming(sessao: SessaoCodigo, step: StepPlano) -> str:
             esqueleto_extra = f"\n\nESQUELETO (expanda):\n```\n{esqueleto}\n```"
 
     try:
-        stream = ollama.chat(
-            model=MODELOS["coder"],
-            messages=[
-                {"role": "system", "content": prompt_arquivo},
-                {"role": "user", "content": contexto + esqueleto_extra},
-            ],
-            options={"temperature": 0.3, "num_predict": 4096},
-            stream=True,
-        )
-
-        codigo_completo = ""
         chars_mostrados = 0
 
-        for chunk in stream:
-            texto = chunk["message"]["content"]
-            codigo_completo += texto
-            # Mostra progresso a cada 100 chars
-            if len(codigo_completo) - chars_mostrados > 100:
+        def progresso(texto: str):
+            nonlocal chars_mostrados
+            chars_mostrados += len(texto)
+            if chars_mostrados >= 100:
                 console.print(".", end="", style="dim")
-                chars_mostrados = len(codigo_completo)
+                chars_mostrados = 0
 
+        codigo_completo = _chat(
+            MODELOS["coder"],
+            prompt_arquivo,
+            [
+                {"role": "user", "content": contexto + esqueleto_extra},
+            ],
+            max_tokens=4096,
+            temperatura=0.3,
+            num_ctx=NUM_CTX_NIVEL[3],
+            on_token=progresso,
+        )
         console.print()  # Nova linha após os dots
         return _extrair_codigo(codigo_completo)
     except Exception as e:
@@ -1345,26 +1382,30 @@ def _planejar_cot(objetivo: str) -> SessaoCodigo:
     # Sem template — usa LLM com chain-of-thought
     try:
         # Passo 1: listar funcionalidades
-        r1 = ollama.chat(
-            model=MODELOS["rapido"],
-            messages=[
+        funcionalidades = _chat(
+            MODELOS["rapido"],
+            "Identifique as funcionalidades necessárias e seja objetivo.",
+            [
                 {"role": "user", "content": _PROMPT_COT_1.format(objetivo=objetivo)},
             ],
-            options={"temperature": 0.3, "num_predict": 300},
+            max_tokens=300,
+            temperatura=0.3,
+            num_ctx=NUM_CTX_AUXILIAR,
         )
-        funcionalidades = r1["message"]["content"].strip()
         console.print("[dim]  Funcionalidades identificadas[/dim]")
 
         # Passo 2: organizar em steps
-        r2 = ollama.chat(
-            model=MODELOS["rapido"],
-            messages=[
+        raw = _chat(
+            MODELOS["rapido"],
+            "Organize o plano solicitado e responda somente em JSON.",
+            [
                 {"role": "user", "content": _PROMPT_COT_2.format(funcionalidades=funcionalidades)},
             ],
-            format="json",
-            options={"temperature": 0.2, "num_predict": 500},
+            max_tokens=500,
+            temperatura=0.2,
+            num_ctx=NUM_CTX_AUXILIAR,
+            formato="json",
         )
-        raw = r2["message"]["content"].strip()
         return _parse_plano(objetivo, raw)
 
     except Exception:
@@ -1375,16 +1416,18 @@ def _planejar_cot(objetivo: str) -> SessaoCodigo:
 def _planejar_simples(objetivo: str) -> SessaoCodigo:
     """Planejamento fallback com prompt único."""
     try:
-        response = ollama.chat(
-            model=MODELOS["rapido"],
-            messages=[
-                {"role": "system", "content": _PROMPT_PLANEJAR_SIMPLES},
+        resposta = _chat(
+            MODELOS["rapido"],
+            _PROMPT_PLANEJAR_SIMPLES,
+            [
                 {"role": "user", "content": objetivo},
             ],
-            format="json",
-            options={"temperature": 0.2, "num_predict": 500},
+            max_tokens=500,
+            temperatura=0.2,
+            num_ctx=NUM_CTX_AUXILIAR,
+            formato="json",
         )
-        return _parse_plano(objetivo, response["message"]["content"].strip())
+        return _parse_plano(objetivo, resposta)
     except Exception:
         return SessaoCodigo(objetivo=objetivo, plano=[StepPlano(numero=1, descricao=objetivo, arquivo="main.py")])
 
@@ -1399,18 +1442,19 @@ def _retry_step(sessao: SessaoCodigo, step: StepPlano, codigo_ant: str, problema
     contexto = sessao.contexto_para_step(step)
     prompt = _PROMPT_RETRY.format(problemas="\n".join(f"- {p}" for p in problemas))
     try:
-        response = ollama.chat(
-            model=MODELOS["coder"],
-            messages=[
-                {"role": "system", "content": _PROMPT_CODER},
+        resposta = _chat(
+            MODELOS["coder"],
+            _PROMPT_CODER,
+            [
                 {"role": "user", "content": contexto},
                 {"role": "assistant", "content": f"```\n{codigo_ant[:2000]}\n```"},
                 {"role": "user", "content": prompt},
             ],
-            options={"temperature": 0.2, "num_predict": 4096},
-            stream=False,
+            max_tokens=4096,
+            temperatura=0.2,
+            num_ctx=NUM_CTX_NIVEL[3],
         )
-        return _extrair_codigo(response["message"]["content"].strip())
+        return _extrair_codigo(resposta)
     except Exception:
         return codigo_ant
 
@@ -1450,20 +1494,30 @@ def _validar_step(sessao: SessaoCodigo, step: StepPlano, codigo: str) -> dict:
     if probs:
         return {"valido": False, "problemas": probs, "decisoes": []}
 
-    # Validação via LLM (apenas se heurísticas passaram)
+    # Módulos auxiliares já passaram por sintaxe e heurísticas. Reservar uma
+    # segunda inferência para pontos de entrada reduz uma chamada por arquivo.
+    pontos_entrada = {
+        "main.py", "app.py", "index.js", "server.js", "src/index.ts", "src/main.jsx"
+    }
+    if step.arquivo not in pontos_entrada:
+        return {"valido": True, "problemas": [], "decisoes": []}
+
+    # Validação via LLM apenas onde integração e execução realmente importam.
     try:
-        r = ollama.chat(
-            model=MODELOS["rapido"],
-            messages=[
-                {"role": "system", "content": _PROMPT_VALIDAR},
+        resposta = _chat(
+            MODELOS["rapido"],
+            _PROMPT_VALIDAR,
+            [
                 {"role": "user", "content": (
                     f"Objetivo: {step.descricao}\nArquivo: {step.arquivo}\n"
                     f"Código:\n{codigo[:1200]}"
                 )},
             ],
-            options={"temperature": 0.1, "num_predict": 80, "num_ctx": 1024},
+            max_tokens=80,
+            temperatura=0.1,
+            num_ctx=NUM_CTX_AUXILIAR,
         )
-        return _parse_validacao(r["message"]["content"].strip())
+        return _parse_validacao(resposta)
     except Exception:
         return {"valido": True, "problemas": [], "decisoes": []}
 

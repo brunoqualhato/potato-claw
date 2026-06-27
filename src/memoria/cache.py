@@ -9,6 +9,7 @@ import atexit
 import hashlib
 import json
 import logging
+import threading
 from datetime import datetime
 from pathlib import Path
 
@@ -24,6 +25,7 @@ class Cache:
     """Cache de respostas com LRU eviction e dirty-write para reduzir I/O."""
 
     def __init__(self, arquivo: str = CACHE_ARQUIVO):
+        self._lock = threading.RLock()
         self.arquivo = Path(arquivo)
         self.dados: dict[str, dict] = {}
         self._dirty = False
@@ -110,40 +112,50 @@ class Cache:
         return False
 
     def buscar(self, pergunta: str) -> str | None:
-        if not CACHE_HABILITADO:
+        with self._lock:
+            if not CACHE_HABILITADO:
+                return None
+            if self._nao_cachear_consulta(pergunta):
+                return None
+            chave = self._hash(pergunta)
+            entry = self.dados.get(chave)
+            if entry:
+                entry["hits"] = entry.get("hits", 0) + 1
+                entry["ultimo_uso"] = datetime.now().isoformat()
+                self._marcar_dirty()
+                return entry["resposta"]
             return None
-        if self._nao_cachear_consulta(pergunta):
-            return None
-        chave = self._hash(pergunta)
-        entry = self.dados.get(chave)
-        if entry:
-            entry["hits"] = entry.get("hits", 0) + 1
-            entry["ultimo_uso"] = datetime.now().isoformat()
-            self._marcar_dirty()
-            return entry["resposta"]
-        return None
 
     def salvar(self, pergunta: str, resposta: str, agente: str = ""):
-        if not CACHE_HABILITADO:
-            return
-        if self._nao_cachear_consulta(pergunta):
-            return
-        chave = self._hash(pergunta)
-        self.dados[chave] = {
-            "resposta": resposta,
-            "agente": agente,
-            "hits": 1,
-            "criado_em": datetime.now().isoformat(),
-            "ultimo_uso": datetime.now().isoformat(),
-        }
-        self._evict_se_necessario()
-        self._marcar_dirty()
+        with self._lock:
+            if not CACHE_HABILITADO:
+                return
+            if self._nao_cachear_consulta(pergunta):
+                return
+            chave = self._hash(pergunta)
+            self.dados[chave] = {
+                "resposta": resposta,
+                "agente": agente,
+                "hits": 1,
+                "criado_em": datetime.now().isoformat(),
+                "ultimo_uso": datetime.now().isoformat(),
+            }
+            self._evict_se_necessario()
+            self._marcar_dirty()
 
     def limpar(self):
-        self.dados = {}
-        self._flush()
+        with self._lock:
+            self.dados = {}
+            self._dirty = True
+            self._flush()
+
+    def flush(self):
+        """Persiste alterações pendentes explicitamente."""
+        with self._lock:
+            self._flush()
 
     def estatisticas(self) -> dict:
-        total = len(self.dados)
-        hits_total = sum(e.get("hits", 0) for e in self.dados.values())
-        return {"entradas": total, "max": CACHE_MAX_ENTRADAS, "hits_total": hits_total}
+        with self._lock:
+            total = len(self.dados)
+            hits_total = sum(e.get("hits", 0) for e in self.dados.values())
+            return {"entradas": total, "max": CACHE_MAX_ENTRADAS, "hits_total": hits_total}

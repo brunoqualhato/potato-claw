@@ -20,15 +20,17 @@ from __future__ import annotations
 
 import json
 import logging
-
-import ollama
+import re
 
 from src.core.config import (
     COORDENADOR_MODELO,
     KEEP_ALIVE_EFEMERO,
+    KEEP_ALIVE_PRINCIPAL,
+    MODELOS,
     NUM_CTX_AUXILIAR,
-    NUM_THREAD,
 )
+from src.core.llm import chamar_llm
+from src.core.utils import normalizar
 
 logger = logging.getLogger(__name__)
 
@@ -44,12 +46,15 @@ _PROMPT_ANALISAR = """Classifique a intenção do usuário em JSON com estes cam
 - "parametros": dados extraídos ({} se vazio)
 
 Regras:
+- generalista: dúvidas cotidianas, culinária, receitas e conhecimento estável
+- programador: SOMENTE quando a pergunta mencionar software, código ou tecnologia
 - calculo: parametros.expressao com a expressão matemática
 - data_hora: parametros.local se pede hora de um lugar
 - arquivo: parametros.acao (ler|criar|listar) + parametros.caminho
 - comando: parametros.comando
 - saudacao: para oi/hello/bom dia
-- precisa_web=false se é conhecimento estável ou ferramenta local resolve"""
+- precisa_web=true SOMENTE com busca explícita ou informação temporal/atual
+- precisa_web=false se é conhecimento estável, receita ou ferramenta local resolve"""
 
 
 # ══════════════════════════════════════════════════════════════
@@ -140,6 +145,70 @@ def salvar_intencao_classificada(pergunta: str, intencao: "IntencaoAnalisada"):
 _AGENTES_VALIDOS = {"generalista", "programador", "pesquisador", "analista"}
 _FERRAMENTAS_VALIDAS = {"calculo", "data_hora", "saudacao", "arquivo", "comando", None}
 
+_SINAIS_TECNICOS = {
+    "api", "app", "aplicacao", "algoritmo", "backend", "banco", "bug",
+    "autenticacao", "classe", "codigo", "crud", "css", "deploy", "docker",
+    "endpoint", "erro", "framework", "frontend", "funcao", "git", "html",
+    "implementar", "javascript", "jwt", "programa", "python", "refatorar",
+    "script", "servidor", "site", "software", "sql", "sistema", "teste",
+    "typescript",
+}
+_SINAIS_ATUAIS = {
+    "agora", "atual", "cotacao", "clima", "hoje", "latest", "noticia",
+    "preco", "previsao", "recente", "release", "temperatura", "ultima",
+    "ultimo", "versao",
+}
+_SINAIS_BUSCA_EXPLICITA = {"busque", "buscar", "pesquise", "pesquisar", "procure", "procurar"}
+_SINAIS_CONSULTA_ESTAVEL = {
+    "como fazer", "como preparar", "defina", "explique", "o que e", "receita",
+}
+_SINAIS_CULINARIOS = {
+    "assar", "bolo", "cozinhar", "forno", "ingrediente", "massa", "molho",
+    "pao", "queijo", "receita",
+}
+
+
+def _tokens_normalizados(texto: str) -> set[str]:
+    return set(re.findall(r"[a-zA-Z0-9_-]{2,}", normalizar(texto)))
+
+
+def _tem_sinal_atual(texto: str) -> bool:
+    texto_norm = normalizar(texto)
+    tokens = _tokens_normalizados(texto)
+    return (
+        any(sinal in texto_norm for sinal in _SINAIS_ATUAIS)
+        or bool(tokens & _SINAIS_BUSCA_EXPLICITA)
+        or bool(re.search(r"\b20\d{2}\b", texto_norm))
+    )
+
+
+def _corrigir_inconsistencias(
+    pergunta: str, intencao: IntencaoAnalisada
+) -> IntencaoAnalisada:
+    """Aplica guardrails baratos sobre classificações improváveis de modelos pequenos."""
+    texto_norm = normalizar(pergunta)
+    tokens = _tokens_normalizados(pergunta)
+
+    # "Como fazer" não implica programação. Só mantém o especialista técnico
+    # quando a própria pergunta contém algum sinal verificável desse domínio.
+    if intencao.agente == "programador" and not (tokens & _SINAIS_TECNICOS):
+        intencao.agente = "generalista"
+
+    eh_culinaria = bool(tokens & _SINAIS_CULINARIOS)
+    consulta_estavel = any(sinal in texto_norm for sinal in _SINAIS_CONSULTA_ESTAVEL)
+    if eh_culinaria:
+        # O modelo ultraleve não é confiável para ingredientes/quantidades.
+        # Grounding custa uma busca, mas evita receitas inventadas.
+        intencao.precisa_web = True
+        intencao.parametros["consulta_web"] = (
+            f"receita tradicional {pergunta} ingredientes modo de preparo"
+        )
+        intencao.parametros["resposta_web_direta"] = True
+    elif intencao.precisa_web and consulta_estavel and not _tem_sinal_atual(pergunta):
+        intencao.precisa_web = False
+
+    return intencao
+
 
 def analisar_intencao(pergunta: str, modelo: str = COORDENADOR_MODELO) -> IntencaoAnalisada:
     """
@@ -156,30 +225,41 @@ def analisar_intencao(pergunta: str, modelo: str = COORDENADOR_MODELO) -> Intenc
         exemplos = _obter_exemplos_dinamicos(pergunta)
         prompt_completo = _PROMPT_ANALISAR + exemplos
 
-        response = ollama.chat(
-            model=modelo,
-            messages=[
-                {"role": "system", "content": prompt_completo},
+        keep_alive = (
+            KEEP_ALIVE_PRINCIPAL
+            if modelo == MODELOS["rapido"]
+            else KEEP_ALIVE_EFEMERO
+        )
+        resultado = chamar_llm(
+            modelo=modelo,
+            system_prompt=prompt_completo,
+            mensagens=[
                 {"role": "user", "content": pergunta},
             ],
-            format="json",
-            options={
-                "temperature": 0.05,
-                "num_predict": 120,
-                "num_thread": NUM_THREAD,
-                "num_ctx": NUM_CTX_AUXILIAR,
-            },
-            # Modelo auxiliar: solta da RAM logo após classificar (não fica
-            # residente competindo memória com o modelo de resposta).
-            keep_alive=KEEP_ALIVE_EFEMERO,
+            stream=False,
+            max_tokens=120,
+            temperatura=0.05,
+            num_ctx=NUM_CTX_AUXILIAR,
+            keep_alive=keep_alive,
+            formato="json",
         )
-        raw = response["message"]["content"].strip()
-        return _parse_resposta(raw)
+        # Aceita também o envelope legado do SDK para manter integrações locais
+        # que injetam um cliente compatível durante a migração de providers.
+        if "message" in resultado:
+            raw = resultado["message"]["content"].strip()
+        else:
+            if resultado["erro"]:
+                raise RuntimeError(resultado["resposta"])
+            raw = resultado["resposta"].strip()
+        return _corrigir_inconsistencias(pergunta, _parse_resposta(raw))
 
     except Exception as e:
         logger.debug("Analisador falhou: %s", e)
-        # Fallback conservador: manda pro generalista com web
-        return IntencaoAnalisada(agente="generalista", precisa_web=True)
+        # Fallback barato: só ativa web quando a própria pergunta traz sinal de frescor.
+        return IntencaoAnalisada(
+            agente="generalista",
+            precisa_web=_tem_sinal_atual(pergunta),
+        )
 
 
 def _parse_resposta(raw: str) -> IntencaoAnalisada:

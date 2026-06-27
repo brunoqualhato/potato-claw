@@ -15,7 +15,9 @@ Otimizações para modelos pequenos:
 """
 
 import logging
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 from rich.console import Console
 from rich.panel import Panel
@@ -64,6 +66,7 @@ class SistemaAgentes:
     """Gerencia a execução dos agentes com 3 níveis de performance."""
 
     def __init__(self, memoria=None, cache=None, semantica=None):
+        self._estado = threading.local()
         self.memoria = memoria or Memoria()
         self.cache = cache or Cache()
         self.semantica = semantica or MemoriaSemantica()
@@ -72,7 +75,53 @@ class SistemaAgentes:
         self.ultimo_nivel = 0
         self.ultima_fonte = ""
         self._acao_local_confirmada = False
+        self._background = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="potato-index"
+        )
         self._agentes: dict[str, Agente] = self._inicializar_agentes()
+
+    def _estado_get(self, nome: str, padrao):
+        return getattr(self._estado, nome, padrao)
+
+    @property
+    def nivel_forcado(self):
+        return self._estado_get("nivel_forcado", None)
+
+    @nivel_forcado.setter
+    def nivel_forcado(self, valor):
+        self._estado.nivel_forcado = valor
+
+    @property
+    def ultimo_agente(self):
+        return self._estado_get("ultimo_agente", "generalista")
+
+    @ultimo_agente.setter
+    def ultimo_agente(self, valor):
+        self._estado.ultimo_agente = valor
+
+    @property
+    def ultimo_nivel(self):
+        return self._estado_get("ultimo_nivel", 0)
+
+    @ultimo_nivel.setter
+    def ultimo_nivel(self, valor):
+        self._estado.ultimo_nivel = valor
+
+    @property
+    def ultima_fonte(self):
+        return self._estado_get("ultima_fonte", "")
+
+    @ultima_fonte.setter
+    def ultima_fonte(self, valor):
+        self._estado.ultima_fonte = valor
+
+    @property
+    def _acao_local_confirmada(self):
+        return self._estado_get("acao_local_confirmada", False)
+
+    @_acao_local_confirmada.setter
+    def _acao_local_confirmada(self, valor):
+        self._estado.acao_local_confirmada = valor
 
     def _inicializar_agentes(self) -> dict[str, Agente]:
         """Cria instâncias de agentes a partir da config. Uma vez, no boot."""
@@ -270,7 +319,10 @@ class SistemaAgentes:
 
         # 1b. Cache exato — ignorado se precisa de dados frescos
         cache_key = f"{nome_agente}:{pergunta}"
-        resposta_cache = None if intencao.precisa_web else self.cache.buscar(cache_key)
+        cache_estavel = not intencao.precisa_web or intencao.parametros.get(
+            "resposta_web_direta", False
+        )
+        resposta_cache = self.cache.buscar(cache_key) if cache_estavel else None
         if resposta_cache:
             console.print("[dim]📋 Nível 1 • Cache[/dim]")
             console.print(resposta_cache, style="green")
@@ -279,7 +331,11 @@ class SistemaAgentes:
             return resposta_cache, []
 
         # 1c. ChromaDB — busca semântica (skip se já sabemos que precisa web)
-        docs_similares = [] if intencao.precisa_web else self.semantica.buscar_similar(pergunta)
+        docs_similares = (
+            []
+            if intencao.precisa_web or nivel == 2
+            else self.semantica.buscar_similar(pergunta)
+        )
         if docs_similares and nivel == 1:
             melhor = docs_similares[0]
             score = melhor.get("score_hibrido", melhor["similaridade"])
@@ -313,7 +369,12 @@ class SistemaAgentes:
         contexto_busca = ""
         if intencao.precisa_web:
             console.print("[dim]🔍 Buscando na web (rápido)...[/dim]")
-            contexto_busca = pesquisar_web_rapida(pergunta, max_paginas=2)
+            consulta_web = intencao.parametros.get("consulta_web", pergunta)
+            contexto_busca = pesquisar_web_rapida(consulta_web, max_paginas=2)
+            if contexto_busca and intencao.parametros.get("resposta_web_direta"):
+                return self._finalizar_resposta_web_direta(
+                    pergunta, contexto_busca, nome_agente, agente_obj, inicio
+                )
 
         mensagens = self._montar_contexto(2, contexto_busca, pergunta)
 
@@ -345,7 +406,7 @@ class SistemaAgentes:
                 self._salvar(pergunta, corrigida, nome_agente, nivel=2, inicio=inicio)
                 resposta_final = agente_obj.pos_execucao(pergunta, corrigida)
                 # Salva classificação como bem-sucedida
-                salvar_intencao_classificada(pergunta, intencao)
+                self._agendar_background(salvar_intencao_classificada, pergunta, intencao)
                 self._registrar_execucao(nome_agente, 2, "llm_rapido_autocorrecao")
                 return resposta_final
 
@@ -355,7 +416,7 @@ class SistemaAgentes:
         self._salvar(pergunta, resultado["resposta"], nome_agente, nivel=2, inicio=inicio)
         resposta_final = agente_obj.pos_execucao(pergunta, resultado["resposta"])
         # Salva classificação como bem-sucedida
-        salvar_intencao_classificada(pergunta, intencao)
+        self._agendar_background(salvar_intencao_classificada, pergunta, intencao)
         self._registrar_execucao(nome_agente, 2, "llm_rapido")
         return resposta_final
 
@@ -364,7 +425,7 @@ class SistemaAgentes:
         Self-correction loop: tenta corrigir resposta fraca no mesmo modelo.
         Custo: ~80-150ms com modelo 1.2B. Evita promoção desnecessária ao nível 3.
         """
-        from src.core.config import KEEP_ALIVE_EFEMERO, NUM_CTX_AUXILIAR
+        from src.core.config import NUM_CTX_AUXILIAR
 
         resultado = chamar_llm(
             modelo=modelo,
@@ -381,7 +442,7 @@ class SistemaAgentes:
             max_tokens=512,
             temperatura=0.3,
             num_ctx=NUM_CTX_AUXILIAR,
-            keep_alive=KEEP_ALIVE_EFEMERO,
+            keep_alive=KEEP_ALIVE_PRINCIPAL,
         )
 
         if resultado["erro"]:
@@ -408,6 +469,16 @@ class SistemaAgentes:
         inicio: float,
     ) -> str:
         """Executa com modelo profundo, RAG e web search completo."""
+        if intencao.parametros.get("resposta_web_direta"):
+            consulta_web = intencao.parametros.get("consulta_web", pergunta)
+            contexto_busca = pesquisar_web_rapida(consulta_web, max_paginas=2)
+            if contexto_busca:
+                return self._finalizar_resposta_web_direta(
+                    pergunta, contexto_busca, nome_agente, agente_obj, inicio
+                )
+
+        if not docs_similares and not intencao.precisa_web:
+            docs_similares = self.semantica.buscar_similar(pergunta)
         contexto_busca, contexto_rag = self._obter_contextos_nivel3(
             intencao, pergunta, docs_similares
         )
@@ -434,26 +505,42 @@ class SistemaAgentes:
             keep_alive=KEEP_ALIVE_PRINCIPAL,
         )
 
-        self._salvar(pergunta, resultado["resposta"], nome_agente, nivel=3, inicio=inicio)
         self._salvar_metrica(
             nome_agente, 3, inicio,
             tokens_in=resultado["tokens_entrada"],
             tokens_out=resultado["tokens_saida"],
             fonte="llm_profundo",
         )
+        self._salvar(pergunta, resultado["resposta"], nome_agente, nivel=3, inicio=inicio)
 
         resposta_final = agente_obj.pos_execucao(pergunta, resultado["resposta"])
 
-        # Resumo automático: só gera se histórico cresceu e resumo está velho
+        # Resumo automático fora do caminho crítico.
         total_msgs = self.memoria.total_mensagens()
-        if total_msgs > 0 and total_msgs % 15 == 0 and not self.memoria.ultimo_resumo():
-            self._gerar_resumo(agente_cfg["modelo_rapido"])
+        if total_msgs > 0 and total_msgs % 15 == 0:
+            self._agendar_background(
+                self._gerar_resumo, agente_cfg["modelo_rapido"]
+            )
 
         # Salva classificação como bem-sucedida para few-shot futuro
-        salvar_intencao_classificada(pergunta, intencao)
+        self._agendar_background(salvar_intencao_classificada, pergunta, intencao)
         self._registrar_execucao(nome_agente, 3, "llm_profundo")
 
         return resposta_final
+
+    def _finalizar_resposta_web_direta(
+        self,
+        pergunta: str,
+        resposta: str,
+        nome_agente: str,
+        agente_obj: Agente,
+        inicio: float,
+    ) -> str:
+        """Retorna conteúdo estruturado sem dar ao LLM chance de alterá-lo."""
+        self._salvar_metrica(nome_agente, 2, inicio, fonte="web_direta")
+        self._salvar(pergunta, resposta, nome_agente, nivel=2, inicio=inicio)
+        self._registrar_execucao(nome_agente, 2, "web_direta")
+        return agente_obj.pos_execucao(pergunta, resposta)
 
     def _obter_contextos_nivel3(
         self,
@@ -469,7 +556,10 @@ class SistemaAgentes:
         if intencao.precisa_web and tem_docs_chromadb:
             console.print("[dim]🔍⚡ Web profunda + RAG em paralelo...[/dim]")
             resultados = paralelo_sync(
-                (pesquisar_web_profunda, (pergunta, 3)),
+                (
+                    pesquisar_web_profunda,
+                    (intencao.parametros.get("consulta_web", pergunta), 3),
+                ),
                 (self._construir_contexto_rag, (docs_similares[:RAG_MAX_DOCS],)),
             )
             contexto_busca = resultados[0] if not isinstance(resultados[0], Exception) else ""
@@ -477,7 +567,8 @@ class SistemaAgentes:
         else:
             if intencao.precisa_web:
                 console.print("[dim]🔍 Busca web profunda (fetch + extract)...[/dim]")
-                contexto_busca = pesquisar_web_profunda(pergunta, max_paginas=3)
+                consulta_web = intencao.parametros.get("consulta_web", pergunta)
+                contexto_busca = pesquisar_web_profunda(consulta_web, max_paginas=3)
 
             if tem_docs_chromadb:
                 docs_rag = docs_similares[:RAG_MAX_DOCS]
@@ -677,16 +768,9 @@ class SistemaAgentes:
         for msg in historico:
             mensagens.append({"role": msg["role"], "content": msg["content"]})
 
-        if contexto_busca:
-            conteudo = (
-                f"{pergunta}\n\n"
-                f"[Dados obtidos agora da web — responda com base exclusivamente nestes dados]:\n"
-                f"{contexto_busca[:1500]}"
-            )
-        else:
-            conteudo = pergunta
-
-        mensagens.append({"role": "user", "content": conteudo})
+        # O contexto web já foi enviado como mensagem de sistema. Repeti-lo na
+        # mensagem do usuário aumentava o prompt em até 1.500 caracteres.
+        mensagens.append({"role": "user", "content": pergunta})
         return mensagens
 
     # ══════════════════════════════════════════════════════════════
@@ -705,8 +789,20 @@ class SistemaAgentes:
         self.memoria.salvar_mensagem("assistant", resposta, agente, nivel)
         cache_key = f"{agente}:{pergunta}"
         self.cache.salvar(cache_key, resposta, agente)
-        self.semantica.adicionar(pergunta, resposta, agente)
+        self._agendar_background(
+            self.semantica.adicionar, pergunta, resposta, agente
+        )
         self.memoria.flush()
+
+    def _agendar_background(self, funcao, *args):
+        """Executa indexação/resumos fora da latência percebida do turno."""
+        def executar():
+            try:
+                funcao(*args)
+            except Exception as exc:
+                logger.debug("Tarefa em background falhou: %s", exc)
+
+        self._background.submit(executar)
 
     def _salvar_confirmacao(
         self, pergunta: str, resposta: str, agente: str, inicio: float
@@ -737,6 +833,7 @@ class SistemaAgentes:
             resumo = resumir_conversa(modelo, mensagens)
             if resumo:
                 self.memoria.salvar_resumo(resumo)
+                self.memoria.flush()
 
     # ══════════════════════════════════════════════════════════════
     # INTERFACE PÚBLICA
@@ -773,4 +870,6 @@ class SistemaAgentes:
         console.print("[dim]📝 Preferência salva[/dim]")
 
     def fechar(self):
+        self._background.shutdown(wait=True)
+        self.cache.flush()
         self.memoria.fechar()

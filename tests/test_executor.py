@@ -3,6 +3,9 @@ Testes de integração para o pipeline principal (executor).
 Usa mocks do Ollama para testar o fluxo end-to-end sem GPU.
 """
 
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -36,10 +39,10 @@ def sistema_mock(tmp_path):
 class TestPipelineNivel1:
     """Testa resolução sem LLM (ferramentas, cache, ChromaDB)."""
 
-    @patch("src.core.analisador.ollama")
+    @patch("src.core.analisador.chamar_llm")
     def test_ferramenta_calculo(self, mock_ollama, sistema_mock):
         """Cálculo resolve no nível 1 sem chamar LLM principal."""
-        mock_ollama.chat.return_value = {
+        mock_ollama.return_value = {
             "message": {
                 "content": (
                     '{"agente":"generalista","precisa_web":false,'
@@ -51,10 +54,10 @@ class TestPipelineNivel1:
         resultado = sistema_mock.executar("generalista", "quanto é 2+2")
         assert "4" in resultado
 
-    @patch("src.core.analisador.ollama")
+    @patch("src.core.analisador.chamar_llm")
     def test_ferramenta_saudacao(self, mock_ollama, sistema_mock):
         """Saudação resolve no nível 1."""
-        mock_ollama.chat.return_value = {
+        mock_ollama.return_value = {
             "message": {
                 "content": '{"agente":"generalista","precisa_web":false,"ferramenta":"saudacao","parametros":{}}'
             }
@@ -63,10 +66,10 @@ class TestPipelineNivel1:
         resultado = sistema_mock.executar("generalista", "oi")
         assert "Olá" in resultado or "pronto" in resultado.lower()
 
-    @patch("src.core.analisador.ollama")
+    @patch("src.core.analisador.chamar_llm")
     def test_ferramenta_data_hora(self, mock_ollama, sistema_mock):
         """Data/hora resolve no nível 1."""
-        mock_ollama.chat.return_value = {
+        mock_ollama.return_value = {
             "message": {
                 "content": '{"agente":"generalista","precisa_web":false,"ferramenta":"data_hora","parametros":{}}'
             }
@@ -75,10 +78,10 @@ class TestPipelineNivel1:
         resultado = sistema_mock.executar("generalista", "que horas são")
         assert "Hora:" in resultado or "Data:" in resultado
 
-    @patch("src.core.analisador.ollama")
+    @patch("src.core.analisador.chamar_llm")
     def test_cache_hit_retorna_apos_classificar_frescor(self, mock_ollama, sistema_mock):
         """Cache hit só ocorre após confirmar que a pergunta não exige dados atuais."""
-        mock_ollama.chat.return_value = {
+        mock_ollama.return_value = {
             "message": {
                 "content": '{"agente":"generalista","precisa_web":false,"ferramenta":null,"parametros":{}}'
             }
@@ -89,9 +92,9 @@ class TestPipelineNivel1:
 
         resultado = sistema_mock.executar("generalista", "como usar docker compose")
         assert resultado == "Use docker-compose up"
-        mock_ollama.chat.assert_called_once()
+        mock_ollama.assert_called_once()
 
-    @patch("src.core.analisador.ollama")
+    @patch("src.core.analisador.chamar_llm")
     @patch("src.agentes.executor.pesquisar_web_rapida", return_value="dados novos")
     @patch("src.agentes.executor.chamar_llm")
     def test_cache_nao_antecipa_consulta_que_precisa_web(
@@ -102,7 +105,7 @@ class TestPipelineNivel1:
             "versão antiga",
             "pesquisador",
         )
-        mock_ollama.chat.return_value = {
+        mock_ollama.return_value = {
             "message": {
                 "content": (
                     '{"agente":"pesquisador","precisa_web":true,'
@@ -124,15 +127,15 @@ class TestPipelineNivel1:
 
         assert resultado == "versão nova"
 
-    @patch("src.core.analisador.ollama")
+    @patch("src.core.analisador.chamar_llm")
     def test_ferramenta_deterministica_nao_carrega_coordenador(self, mock_ollama, sistema_mock):
         resultado = sistema_mock.executar("generalista", "quanto é 8*7")
 
         assert "56" in resultado
         assert sistema_mock.ultima_fonte == "ferramenta"
-        mock_ollama.chat.assert_not_called()
+        mock_ollama.assert_not_called()
 
-    @patch("src.core.analisador.ollama")
+    @patch("src.core.analisador.chamar_llm")
     def test_acao_mutavel_exige_confirmacao(self, mock_ollama, sistema_mock):
         resultado = sistema_mock.executar(
             "generalista", "criar arquivo data/teste.txt ::: conteúdo"
@@ -143,17 +146,17 @@ class TestPipelineNivel1:
         assert sistema_mock.cache.buscar(
             "generalista:criar arquivo data/teste.txt ::: conteúdo"
         ) is None
-        mock_ollama.chat.assert_not_called()
+        mock_ollama.assert_not_called()
 
 
 class TestPipelineNivel2:
     """Testa execução com modelo rápido."""
 
     @patch("src.agentes.executor.chamar_llm")
-    @patch("src.core.analisador.ollama")
+    @patch("src.core.analisador.chamar_llm")
     def test_nivel2_retorna_resposta_llm(self, mock_analisador, mock_chamar_llm, sistema_mock):
         """Pergunta simples usa modelo rápido e retorna resposta."""
-        mock_analisador.chat.return_value = {
+        mock_analisador.return_value = {
             "message": {
                 "content": '{"agente":"generalista","precisa_web":false,"ferramenta":null,"parametros":{}}'
             }
@@ -171,10 +174,10 @@ class TestPipelineNivel2:
 
     @patch("src.agentes.executor.chamar_llm")
     @patch("src.agentes.executor.pesquisar_web_rapida")
-    @patch("src.core.analisador.ollama")
+    @patch("src.core.analisador.chamar_llm")
     def test_nivel2_com_web(self, mock_analisador, mock_web, mock_chamar_llm, sistema_mock):
         """Quando precisa_web=true, busca web antes de chamar LLM."""
-        mock_analisador.chat.return_value = {
+        mock_analisador.return_value = {
             "message": {
                 "content": '{"agente":"pesquisador","precisa_web":true,"ferramenta":null,"parametros":{}}'
             }
@@ -191,6 +194,85 @@ class TestPipelineNivel2:
         mock_web.assert_called_once()
         assert "22" in resultado or "Node" in resultado
 
+    @patch("src.agentes.executor.chamar_llm")
+    @patch("src.core.analisador.chamar_llm")
+    def test_nivel2_nao_calcula_embedding_sem_uso(
+        self, mock_analisador, mock_chamar_llm, sistema_mock
+    ):
+        mock_analisador.return_value = {
+            "resposta": '{"agente":"generalista","precisa_web":false,"ferramenta":null,"parametros":{}}',
+            "erro": False,
+        }
+        mock_chamar_llm.return_value = {
+            "resposta": "resposta suficientemente completa para a pergunta simples",
+            "tempo_ms": 10,
+            "tokens_entrada": 1,
+            "tokens_saida": 1,
+            "erro": False,
+        }
+
+        sistema_mock.executar("generalista", "explique brevemente filas de mensagens")
+
+        sistema_mock.semantica.buscar_similar.assert_not_called()
+
+
+def test_contexto_web_nao_e_duplicado(sistema_mock):
+    mensagens = sistema_mock._montar_contexto(
+        n_msgs=0,
+        contexto_busca="FATO_WEB_UNICO",
+        pergunta="qual o fato?",
+    )
+
+    assert sum(m["content"].count("FATO_WEB_UNICO") for m in mensagens) == 1
+
+
+def test_indexacao_semantica_nao_bloqueia_resposta(sistema_mock):
+    sistema_mock.semantica.adicionar.side_effect = lambda *_: time.sleep(0.15)
+
+    inicio = time.perf_counter()
+    sistema_mock._salvar("pergunta estável", "resposta", "generalista", 2, inicio)
+    decorrido = time.perf_counter() - inicio
+
+    assert decorrido < 0.08
+
+
+def test_metadados_de_execucao_sao_isolados_por_thread(sistema_mock):
+    barreira = threading.Barrier(2)
+
+    def registrar(agente, nivel):
+        sistema_mock._registrar_execucao(agente, nivel, "teste")
+        barreira.wait()
+        return sistema_mock.ultimo_agente, sistema_mock.ultimo_nivel
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        a = pool.submit(registrar, "programador", 3)
+        b = pool.submit(registrar, "pesquisador", 2)
+
+    assert a.result() == ("programador", 3)
+    assert b.result() == ("pesquisador", 2)
+
+
+@patch("src.agentes.executor.pesquisar_web_rapida")
+@patch("src.agentes.executor.chamar_llm")
+@patch("src.core.analisador.chamar_llm")
+def test_receita_estruturada_nao_e_reescrita_pelo_modelo(
+    mock_analisador, mock_chamar_llm, mock_web, sistema_mock
+):
+    mock_analisador.return_value = {
+        "resposta": '{"agente":"programador","precisa_web":true,"ferramenta":null,"parametros":{}}',
+        "erro": False,
+    }
+    mock_web.return_value = (
+        "# Pão de queijo\n\n## Ingredientes\n- 200 g de polvilho\n"
+        "\n## Modo de preparo\n1. Misture e asse.\n\nFonte: exemplo"
+    )
+
+    resposta = sistema_mock.executar("generalista", "como fazer um pão de queijo")
+
+    assert "200 g de polvilho" in resposta
+    assert sistema_mock.ultima_fonte == "web_direta"
+    mock_chamar_llm.assert_not_called()
+
 
 class TestPipelineNivel3:
     """Testa execução com modelo profundo + RAG."""
@@ -198,12 +280,12 @@ class TestPipelineNivel3:
     @patch("src.agentes.executor.verificar_modelo_disponivel")
     @patch("src.agentes.executor.chamar_llm")
     @patch("src.agentes.executor.pesquisar_web_profunda")
-    @patch("src.core.analisador.ollama")
+    @patch("src.core.analisador.chamar_llm")
     def test_nivel3_com_web_profunda(
         self, mock_analisador, mock_web, mock_chamar_llm, mock_modelo_disponivel, sistema_mock
     ):
         """Nível 3 usa web profunda e modelo profundo."""
-        mock_analisador.chat.return_value = {
+        mock_analisador.return_value = {
             "message": {
                 "content": '{"agente":"programador","precisa_web":true,"ferramenta":null,"parametros":{}}'
             }
@@ -229,10 +311,10 @@ class TestRoteamento:
     """Testa roteamento automático de agente."""
 
     @patch("src.agentes.executor.chamar_llm")
-    @patch("src.core.analisador.ollama")
+    @patch("src.core.analisador.chamar_llm")
     def test_redireciona_para_programador(self, mock_analisador, mock_chamar_llm, sistema_mock):
         """Analisador sugere programador, executor redireciona."""
-        mock_analisador.chat.return_value = {
+        mock_analisador.return_value = {
             "message": {
                 "content": '{"agente":"programador","precisa_web":false,"ferramenta":null,"parametros":{}}'
             }
@@ -253,10 +335,10 @@ class TestNivelForcado:
 
     @patch("src.agentes.executor.verificar_modelo_disponivel")
     @patch("src.agentes.executor.chamar_llm")
-    @patch("src.core.analisador.ollama")
+    @patch("src.core.analisador.chamar_llm")
     def test_forcar_nivel3(self, mock_analisador, mock_chamar_llm, mock_modelo, sistema_mock):
         """forcar_nivel(3) faz usar modelo profundo mesmo para pergunta simples."""
-        mock_analisador.chat.return_value = {
+        mock_analisador.return_value = {
             "message": {
                 "content": '{"agente":"generalista","precisa_web":false,"ferramenta":null,"parametros":{}}'
             }
@@ -277,20 +359,20 @@ class TestNivelForcado:
 class TestErros:
     """Testa resiliência a erros."""
 
-    @patch("src.core.analisador.ollama")
+    @patch("src.core.analisador.chamar_llm")
     def test_analisador_falha_usa_fallback(self, mock_ollama, sistema_mock):
         """Se o analisador falha, usa fallback conservador."""
-        mock_ollama.chat.side_effect = Exception("Ollama offline")
+        mock_ollama.side_effect = Exception("Ollama offline")
 
         # Com fallback, deve cair em nível 1 → ferramentas
         resultado = sistema_mock.executar("generalista", "quanto é 5+5")
         assert "10" in resultado
 
     @patch("src.agentes.executor.chamar_llm")
-    @patch("src.core.analisador.ollama")
+    @patch("src.core.analisador.chamar_llm")
     def test_resposta_erro_nao_e_cacheada(self, mock_analisador, mock_chamar_llm, sistema_mock):
         """Respostas de erro do LLM não são salvas no cache."""
-        mock_analisador.chat.return_value = {
+        mock_analisador.return_value = {
             "message": {
                 "content": '{"agente":"generalista","precisa_web":false,"ferramenta":null,"parametros":{}}'
             }

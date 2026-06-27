@@ -14,7 +14,6 @@ from __future__ import annotations
 import logging
 import os
 import secrets
-import threading
 from asyncio import to_thread
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
@@ -58,7 +57,6 @@ async def verificar_api_key(api_key: str | None = Security(_api_key_header)):
 # ══════════════════════════════════════════════════════════════
 
 _sistema: SistemaAgentes | None = None
-_lock = threading.Lock()  # Thread-safety para estado compartilhado
 
 
 @asynccontextmanager
@@ -121,11 +119,10 @@ async def chat(req: PerguntaRequest, _: str | None = Depends(verificar_api_key))
         raise HTTPException(status_code=503, detail="Sistema não inicializado")
 
     def executar():
-        with _lock:
-            if req.nivel:
-                _sistema.forcar_nivel(req.nivel)
-            resposta = _sistema.executar("generalista", req.pergunta)
-            return resposta, _sistema.ultimo_agente, _sistema.ultimo_nivel, _sistema.ultima_fonte
+        if req.nivel:
+            _sistema.forcar_nivel(req.nivel)
+        resposta = _sistema.executar("generalista", req.pergunta)
+        return resposta, _sistema.ultimo_agente, _sistema.ultimo_nivel, _sistema.ultima_fonte
 
     resposta, agente, nivel, fonte = await to_thread(executar)
     return RespostaChat(resposta=resposta, agente=agente, nivel=nivel, fonte=fonte)
@@ -138,11 +135,10 @@ async def chat_com_agente(req: PerguntaAgenteRequest, _: str | None = Depends(ve
         raise HTTPException(status_code=503, detail="Sistema não inicializado")
 
     def executar():
-        with _lock:
-            if req.nivel:
-                _sistema.forcar_nivel(req.nivel)
-            resposta = _sistema.executar(req.agente, req.pergunta)
-            return resposta, _sistema.ultimo_agente, _sistema.ultimo_nivel, _sistema.ultima_fonte
+        if req.nivel:
+            _sistema.forcar_nivel(req.nivel)
+        resposta = _sistema.executar(req.agente, req.pergunta)
+        return resposta, _sistema.ultimo_agente, _sistema.ultimo_nivel, _sistema.ultima_fonte
 
     resposta, agente, nivel, fonte = await to_thread(executar)
     return RespostaChat(resposta=resposta, agente=agente, nivel=nivel, fonte=fonte)
@@ -154,10 +150,6 @@ async def stats(_: str | None = Depends(verificar_api_key)):
     if not _sistema:
         raise HTTPException(status_code=503, detail="Sistema não inicializado")
 
-    # Lê sob o mesmo lock das escritas (/chat), em thread, para não correr com
-    # mutações de cache/SQLite no estado compartilhado.
-    def ler():
-        with _lock:
-            return _sistema.estatisticas()
-
-    return await to_thread(ler)
+    # Cada backend de memória protege suas próprias estruturas; a leitura não
+    # precisa esperar uma inferência longa terminar.
+    return await to_thread(_sistema.estatisticas)

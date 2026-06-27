@@ -78,6 +78,23 @@ class TestHTMLParaMarkdown:
         md = html_para_markdown(html)
         assert ">" in md or "&gt;" in md  # Parser converte automaticamente
 
+    def test_prioriza_receita_jsonld_estruturada(self):
+        html = """
+        <html><nav>muito ruído</nav><script type="application/ld+json">
+        {"@context":"https://schema.org","@type":"Recipe","name":"Pão de queijo",
+         "recipeIngredient":["500 g de polvilho","200 g de queijo"],
+         "recipeInstructions":[{"@type":"HowToStep","text":"Misture os ingredientes."},
+                               {"@type":"HowToStep","text":"Asse até dourar."}]}
+        </script><p>conteúdo genérico</p></html>
+        """
+
+        md = html_para_markdown(html)
+
+        assert md.startswith("# Pão de queijo")
+        assert "- 500 g de polvilho" in md
+        assert "1. Misture os ingredientes." in md
+        assert "muito ruído" not in md
+
 
 class TestResultadoBusca:
     def test_dataclass(self):
