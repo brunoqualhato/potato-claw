@@ -319,7 +319,10 @@ class SistemaAgentes:
 
         # 1b. Cache exato — ignorado se precisa de dados frescos
         cache_key = f"{nome_agente}:{pergunta}"
-        resposta_cache = None if intencao.precisa_web else self.cache.buscar(cache_key)
+        cache_estavel = not intencao.precisa_web or intencao.parametros.get(
+            "resposta_web_direta", False
+        )
+        resposta_cache = self.cache.buscar(cache_key) if cache_estavel else None
         if resposta_cache:
             console.print("[dim]📋 Nível 1 • Cache[/dim]")
             console.print(resposta_cache, style="green")
@@ -366,7 +369,12 @@ class SistemaAgentes:
         contexto_busca = ""
         if intencao.precisa_web:
             console.print("[dim]🔍 Buscando na web (rápido)...[/dim]")
-            contexto_busca = pesquisar_web_rapida(pergunta, max_paginas=2)
+            consulta_web = intencao.parametros.get("consulta_web", pergunta)
+            contexto_busca = pesquisar_web_rapida(consulta_web, max_paginas=2)
+            if contexto_busca and intencao.parametros.get("resposta_web_direta"):
+                return self._finalizar_resposta_web_direta(
+                    pergunta, contexto_busca, nome_agente, agente_obj, inicio
+                )
 
         mensagens = self._montar_contexto(2, contexto_busca, pergunta)
 
@@ -461,6 +469,14 @@ class SistemaAgentes:
         inicio: float,
     ) -> str:
         """Executa com modelo profundo, RAG e web search completo."""
+        if intencao.parametros.get("resposta_web_direta"):
+            consulta_web = intencao.parametros.get("consulta_web", pergunta)
+            contexto_busca = pesquisar_web_rapida(consulta_web, max_paginas=2)
+            if contexto_busca:
+                return self._finalizar_resposta_web_direta(
+                    pergunta, contexto_busca, nome_agente, agente_obj, inicio
+                )
+
         if not docs_similares and not intencao.precisa_web:
             docs_similares = self.semantica.buscar_similar(pergunta)
         contexto_busca, contexto_rag = self._obter_contextos_nivel3(
@@ -512,6 +528,20 @@ class SistemaAgentes:
 
         return resposta_final
 
+    def _finalizar_resposta_web_direta(
+        self,
+        pergunta: str,
+        resposta: str,
+        nome_agente: str,
+        agente_obj: Agente,
+        inicio: float,
+    ) -> str:
+        """Retorna conteúdo estruturado sem dar ao LLM chance de alterá-lo."""
+        self._salvar_metrica(nome_agente, 2, inicio, fonte="web_direta")
+        self._salvar(pergunta, resposta, nome_agente, nivel=2, inicio=inicio)
+        self._registrar_execucao(nome_agente, 2, "web_direta")
+        return agente_obj.pos_execucao(pergunta, resposta)
+
     def _obter_contextos_nivel3(
         self,
         intencao: IntencaoAnalisada,
@@ -526,7 +556,10 @@ class SistemaAgentes:
         if intencao.precisa_web and tem_docs_chromadb:
             console.print("[dim]🔍⚡ Web profunda + RAG em paralelo...[/dim]")
             resultados = paralelo_sync(
-                (pesquisar_web_profunda, (pergunta, 3)),
+                (
+                    pesquisar_web_profunda,
+                    (intencao.parametros.get("consulta_web", pergunta), 3),
+                ),
                 (self._construir_contexto_rag, (docs_similares[:RAG_MAX_DOCS],)),
             )
             contexto_busca = resultados[0] if not isinstance(resultados[0], Exception) else ""
@@ -534,7 +567,8 @@ class SistemaAgentes:
         else:
             if intencao.precisa_web:
                 console.print("[dim]🔍 Busca web profunda (fetch + extract)...[/dim]")
-                contexto_busca = pesquisar_web_profunda(pergunta, max_paginas=3)
+                consulta_web = intencao.parametros.get("consulta_web", pergunta)
+                contexto_busca = pesquisar_web_profunda(consulta_web, max_paginas=3)
 
             if tem_docs_chromadb:
                 docs_rag = docs_similares[:RAG_MAX_DOCS]

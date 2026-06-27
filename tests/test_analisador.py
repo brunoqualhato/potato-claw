@@ -2,7 +2,12 @@
 
 from unittest.mock import patch
 
-from src.core.analisador import _parse_resposta, analisar_intencao
+from src.core.analisador import (
+    IntencaoAnalisada,
+    _corrigir_inconsistencias,
+    _parse_resposta,
+    analisar_intencao,
+)
 from src.core.config import KEEP_ALIVE_PRINCIPAL
 
 
@@ -78,3 +83,44 @@ def test_analisador_mantem_modelo_rapido_residente(mock_llm, _mock_exemplos):
     kwargs = mock_llm.call_args.kwargs
     assert kwargs["keep_alive"] == KEEP_ALIVE_PRINCIPAL
     assert kwargs["formato"] == "json"
+
+
+def test_guardrail_corrige_receita_e_forca_grounding_web():
+    intencao = IntencaoAnalisada(agente="programador", precisa_web=True)
+
+    corrigida = _corrigir_inconsistencias("como fazer um pão de queijo", intencao)
+
+    assert corrigida.agente == "generalista"
+    assert corrigida.precisa_web is True
+    assert "ingredientes" in corrigida.parametros["consulta_web"]
+    assert corrigida.parametros["resposta_web_direta"] is True
+
+
+def test_guardrail_preserva_programacao_quando_ha_sinal_tecnico():
+    intencao = IntencaoAnalisada(agente="programador", precisa_web=False)
+
+    corrigida = _corrigir_inconsistencias("como fazer deploy de uma API", intencao)
+
+    assert corrigida.agente == "programador"
+
+
+def test_guardrail_preserva_web_em_consulta_temporal():
+    intencao = IntencaoAnalisada(agente="pesquisador", precisa_web=True)
+
+    corrigida = _corrigir_inconsistencias("qual a versão atual do Python", intencao)
+
+    assert corrigida.precisa_web is True
+
+
+@patch("src.core.analisador._obter_exemplos_dinamicos", return_value="")
+@patch("src.core.analisador.chamar_llm")
+def test_analisador_aplica_guardrail_ao_resultado_do_modelo(mock_llm, _mock_exemplos):
+    mock_llm.return_value = {
+        "resposta": '{"agente":"programador","precisa_web":true,"ferramenta":null,"parametros":{}}',
+        "erro": False,
+    }
+
+    resultado = analisar_intencao("como fazer um pão de queijo")
+
+    assert resultado.agente == "generalista"
+    assert resultado.precisa_web is True

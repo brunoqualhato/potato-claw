@@ -25,6 +25,8 @@ Performance (Mac M1 8GB):
 from __future__ import annotations
 
 import hashlib
+import html as html_lib
+import json
 import logging
 import re
 import time
@@ -64,6 +66,7 @@ MAX_CONTEXTO_TOTAL = 4000      # Chars totais enviados para a LLM extratora
 MODELO_EXTRATOR = MODELOS["rapido"]  # LLM barata para extração
 CACHE_FETCH_DIR = DATA_DIR / "web_cache"
 CACHE_TTL_S = WEB_RAG_CACHE_TTL
+CACHE_FORMAT_VERSION = "v2-jsonld"
 
 # Headers realistas para evitar bloqueio
 _HEADERS = {
@@ -113,7 +116,8 @@ def buscar_urls(query: str, max_resultados: int = 5) -> list[ResultadoBusca]:
 
 
 def _url_hash(url: str) -> str:
-    return hashlib.sha256(url.encode()).hexdigest()[:12]
+    chave = f"{CACHE_FORMAT_VERSION}:{url}"
+    return hashlib.sha256(chave.encode()).hexdigest()[:12]
 
 
 def _cache_valido(url: str) -> Optional[str]:
@@ -261,6 +265,10 @@ class _HTMLParaTexto(HTMLParser):
 
 def html_para_markdown(html: str) -> str:
     """Converte HTML para Markdown limpo — sem deps externas (~5ms)."""
+    receita = _extrair_receita_jsonld(html)
+    if receita:
+        return receita[:MAX_MD_CHARS]
+
     parser = _HTMLParaTexto()
     try:
         parser.feed(html)
@@ -284,6 +292,68 @@ def html_para_markdown(html: str) -> str:
         md = md[:MAX_MD_CHARS] + "\n\n[...conteúdo truncado]"
 
     return md
+
+
+def _extrair_receita_jsonld(html: str) -> str:
+    """Extrai Recipe estruturada antes que navegação/anúncios consumam o limite."""
+    blocos = re.findall(
+        r'<script[^>]+type=["\']application/ld\+json["\'][^>]*>(.*?)</script>',
+        html,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+
+    def visitar(valor):
+        if isinstance(valor, dict):
+            tipo = valor.get("@type", "")
+            tipos = {tipo} if isinstance(tipo, str) else set(tipo or [])
+            if "Recipe" in tipos:
+                yield valor
+            for filho in valor.values():
+                yield from visitar(filho)
+        elif isinstance(valor, list):
+            for filho in valor:
+                yield from visitar(filho)
+
+    for bloco in blocos:
+        try:
+            dados = json.loads(html_lib.unescape(bloco).strip())
+        except (json.JSONDecodeError, TypeError):
+            continue
+
+        receita = next(visitar(dados), None)
+        if not receita:
+            continue
+
+        nome = receita.get("name") or "Receita"
+        ingredientes = receita.get("recipeIngredient") or []
+        instrucoes_raw = receita.get("recipeInstructions") or []
+        if isinstance(instrucoes_raw, str):
+            instrucoes_raw = [instrucoes_raw]
+
+        instrucoes: list[str] = []
+        for item in instrucoes_raw:
+            if isinstance(item, str):
+                instrucoes.append(item)
+            elif isinstance(item, dict):
+                texto = item.get("text") or item.get("name")
+                if texto:
+                    instrucoes.append(texto)
+                for subitem in item.get("itemListElement", []):
+                    if isinstance(subitem, str):
+                        instrucoes.append(subitem)
+                    elif isinstance(subitem, dict) and subitem.get("text"):
+                        instrucoes.append(subitem["text"])
+
+        if not ingredientes or not instrucoes:
+            continue
+
+        linhas = [f"# {nome}", "", "## Ingredientes"]
+        linhas.extend(f"- {item}" for item in ingredientes)
+        linhas.extend(("", "## Modo de preparo"))
+        linhas.extend(f"{i}. {texto}" for i, texto in enumerate(instrucoes, 1))
+        return "\n".join(linhas)
+
+    return ""
 
 
 # ══════════════════════════════════════════════════════════════

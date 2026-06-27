@@ -252,6 +252,28 @@ def test_metadados_de_execucao_sao_isolados_por_thread(sistema_mock):
     assert b.result() == ("pesquisador", 2)
 
 
+@patch("src.agentes.executor.pesquisar_web_rapida")
+@patch("src.agentes.executor.chamar_llm")
+@patch("src.core.analisador.chamar_llm")
+def test_receita_estruturada_nao_e_reescrita_pelo_modelo(
+    mock_analisador, mock_chamar_llm, mock_web, sistema_mock
+):
+    mock_analisador.return_value = {
+        "resposta": '{"agente":"programador","precisa_web":true,"ferramenta":null,"parametros":{}}',
+        "erro": False,
+    }
+    mock_web.return_value = (
+        "# Pão de queijo\n\n## Ingredientes\n- 200 g de polvilho\n"
+        "\n## Modo de preparo\n1. Misture e asse.\n\nFonte: exemplo"
+    )
+
+    resposta = sistema_mock.executar("generalista", "como fazer um pão de queijo")
+
+    assert "200 g de polvilho" in resposta
+    assert sistema_mock.ultima_fonte == "web_direta"
+    mock_chamar_llm.assert_not_called()
+
+
 class TestPipelineNivel3:
     """Testa execução com modelo profundo + RAG."""
 
