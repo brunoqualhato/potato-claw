@@ -37,6 +37,8 @@ from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from typing import Optional
 
+import os
+
 from ddgs import DDGS
 
 from src.core.config import (
@@ -52,6 +54,8 @@ from src.core.config import (
 from src.core.llm import chamar_llm
 
 logger = logging.getLogger(__name__)
+
+_USA_TAVILY = bool(os.environ.get("TAVILY_API_KEY"))
 
 
 # ══════════════════════════════════════════════════════════════
@@ -92,7 +96,18 @@ class ResultadoBusca:
 
 
 def buscar_urls(query: str, max_resultados: int = 5) -> list[ResultadoBusca]:
-    """Retorna URLs rankeadas do DuckDuckGo."""
+    """Retorna URLs rankeadas do Tavily (se disponível) ou DuckDuckGo."""
+    if _USA_TAVILY:
+        try:
+            from src.ferramentas.web_tavily import buscar_urls_tavily
+            resultados = buscar_urls_tavily(query, max_resultados)
+            return [
+                ResultadoBusca(titulo=r.titulo, url=r.url, snippet=r.snippet)
+                for r in resultados
+            ]
+        except Exception as e:
+            logger.warning("Erro na busca Tavily, fallback para DuckDuckGo: %s", e)
+
     try:
         with DDGS() as ddgs:
             raw = list(ddgs.text(query, max_results=max_resultados))

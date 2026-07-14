@@ -3,6 +3,7 @@ ollama>=0.6,<1.0
 rich>=13.0,<16.0
 chromadb>=1.0,<2.0
 ddgs>=9.0,<10.0
+tavily-python>=0.5
 
 # API (opcional — instale para usar api.py)
 # fastapi>=0.100,<1.0
