@@ -1,12 +1,20 @@
 """
-Ferramenta de pesquisa web via DuckDuckGo.
+Ferramenta de pesquisa web via DuckDuckGo (ou Tavily, quando configurado).
 """
+
+import os
 
 from ddgs import DDGS
 
+_USA_TAVILY = bool(os.environ.get("TAVILY_API_KEY"))
+
 
 def pesquisar_web(query: str, max_resultados: int = 5) -> str:
-    """Pesquisa na web usando DuckDuckGo."""
+    """Pesquisa na web usando Tavily (se disponível) ou DuckDuckGo."""
+    if _USA_TAVILY:
+        from src.ferramentas.web_tavily import pesquisar_web_tavily
+        return pesquisar_web_tavily(query, max_resultados)
+
     try:
         with DDGS() as ddgs:
             resultados = list(ddgs.text(query, max_results=max_resultados))
