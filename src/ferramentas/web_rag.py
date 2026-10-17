@@ -37,8 +37,6 @@ from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from typing import Optional
 
-import os
-
 from ddgs import DDGS
 
 from src.core.config import (
@@ -52,10 +50,9 @@ from src.core.config import (
     WEB_RAG_MAX_PAGINAS,
 )
 from src.core.llm import chamar_llm
+from src.ferramentas.web_provider import obter_provedor_web
 
 logger = logging.getLogger(__name__)
-
-_USA_TAVILY = bool(os.environ.get("TAVILY_API_KEY"))
 
 
 # ══════════════════════════════════════════════════════════════
@@ -96,8 +93,25 @@ class ResultadoBusca:
 
 
 def buscar_urls(query: str, max_resultados: int = 5) -> list[ResultadoBusca]:
-    """Retorna URLs rankeadas do Tavily (se disponível) ou DuckDuckGo."""
-    if _USA_TAVILY:
+    """Retorna URLs rankeadas do backend selecionado."""
+    try:
+        provedor = obter_provedor_web()
+    except ValueError as e:
+        logger.warning("%s", e)
+        return []
+    if provedor == "none":
+        return []
+    if provedor == "parallel":
+        try:
+            from src.ferramentas.web_parallel import buscar_documentos_parallel
+            return [
+                ResultadoBusca(titulo=d["titulo"], url=d["url"], snippet=d["markdown"])
+                for d in buscar_documentos_parallel(query, max_resultados)
+            ]
+        except Exception as e:
+            logger.warning("Erro na busca Parallel: %s", e)
+            return []
+    if provedor == "tavily":
         try:
             from src.ferramentas.web_tavily import buscar_urls_tavily
             resultados = buscar_urls_tavily(query, max_resultados)
@@ -106,7 +120,8 @@ def buscar_urls(query: str, max_resultados: int = 5) -> list[ResultadoBusca]:
                 for r in resultados
             ]
         except Exception as e:
-            logger.warning("Erro na busca Tavily, fallback para DuckDuckGo: %s", e)
+            logger.warning("Erro na busca Tavily: %s", e)
+            return []
 
     try:
         with DDGS() as ddgs:
@@ -487,6 +502,23 @@ def pesquisar_e_extrair(
     """
     inicio = time.time()
 
+    # Parallel entrega markdown pelo MCP; não faz fetch local das URLs retornadas.
+    try:
+        provedor = obter_provedor_web()
+    except ValueError as e:
+        logger.warning("%s", e)
+        return ResultadoWebRAG(fatos_extraidos="")
+    if provedor == "none":
+        return ResultadoWebRAG(fatos_extraidos="")
+    if provedor == "parallel":
+        try:
+            from src.ferramentas.web_parallel import buscar_documentos_parallel
+            documentos = buscar_documentos_parallel(pergunta, max_paginas, buscar_conteudo=usar_extrator)
+        except Exception as e:
+            logger.warning("Erro na pesquisa Parallel: %s", e)
+            return ResultadoWebRAG(fatos_extraidos="", tempo_ms=int((time.time() - inicio) * 1000))
+        return _finalizar_documentos(pergunta, documentos, usar_extrator, inicio)
+
     # 1. SEARCH
     resultados_busca = buscar_urls(pergunta, max_resultados=max_paginas + 2)
     if not resultados_busca:
@@ -525,6 +557,11 @@ def pesquisar_e_extrair(
         if md.strip():
             documentos.append({"url": url, "titulo": titulo, "markdown": md})
 
+    return _finalizar_documentos(pergunta, documentos, usar_extrator, inicio)
+
+
+def _finalizar_documentos(pergunta: str, documentos: list[dict], usar_extrator: bool, inicio: float) -> ResultadoWebRAG:
+    """Consome documentos dos backends com o mesmo limite e referências."""
     if not documentos:
         return ResultadoWebRAG(fatos_extraidos="", tempo_ms=int((time.time() - inicio) * 1000))
 
@@ -559,6 +596,13 @@ def pesquisar_e_extrair(
 # ══════════════════════════════════════════════════════════════
 
 
+def _permite_busca_simples() -> bool:
+    try:
+        return obter_provedor_web() not in {"parallel", "none"}
+    except ValueError:
+        return False
+
+
 def pesquisar_web_profunda(pergunta: str, max_paginas: int = 3) -> str:
     """
     Substitui pesquisar_web() com pipeline completo.
@@ -566,7 +610,7 @@ def pesquisar_web_profunda(pergunta: str, max_paginas: int = 3) -> str:
     """
     resultado = pesquisar_e_extrair(pergunta, max_paginas=max_paginas, usar_extrator=True)
 
-    if not resultado.fatos_extraidos:
+    if not resultado.fatos_extraidos and _permite_busca_simples():
         # Fallback para busca simples
         from src.ferramentas.web import pesquisar_web
         return pesquisar_web(pergunta, max_resultados=5)
@@ -581,7 +625,7 @@ def pesquisar_web_rapida(pergunta: str, max_paginas: int = 2) -> str:
     """
     resultado = pesquisar_e_extrair(pergunta, max_paginas=max_paginas, usar_extrator=False)
 
-    if not resultado.fatos_extraidos:
+    if not resultado.fatos_extraidos and _permite_busca_simples():
         from src.ferramentas.web import pesquisar_web
         return pesquisar_web(pergunta, max_resultados=3)
 

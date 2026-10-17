@@ -166,6 +166,32 @@ Variáveis importantes:
 
 ## Como executar
 
+### Busca opcional com Parallel Search MCP
+
+Para usar busca web gratuita sem conta ou chave de API com
+[Parallel Search MCP](https://docs.parallel.ai/integrations/mcp/search-mcp):
+
+```bash
+pip install -r requirements-parallel.txt
+export NEURON_WEB_PROVIDER=parallel
+python main.py --query "qual a última versão estável do Python"
+```
+
+A seleção vale para a busca simples e para o contexto web dos agentes na CLI e
+na API. A busca anônima usa o modo Fast. O caminho rápido consome trechos com
+URLs; o web RAG profundo também extrai páginas pelo MCP antes da extração local
+de fatos. Perguntas que não precisam de web continuam no fluxo local.
+
+Sem `NEURON_WEB_PROVIDER`, a chave `TAVILY_API_KEY` mantém a seleção de Tavily;
+sem chave, DuckDuckGo continua como padrão. Use `duckduckgo` ou `tavily` para
+selecioná-los explicitamente, ou `none` para desativar todas as buscas web.
+Parallel exige instalação opcional e acesso à internet; consultas e URLs são
+enviadas a `https://search.parallel.ai/mcp`. Ele não lê chaves Parallel do ambiente.
+Erros não trocam o provedor escolhido. O serviço gratuito tem limites de uso;
+falhas são registradas no log e não são tratadas como resultados de pesquisa.
+`NEURON_PARALLEL_TIMEOUT` limita a operação completa (padrão: 20 segundos,
+máximo: 120). A integração não armazena um cache adicional de páginas Parallel.
+
 ### CLI interativa
 
 ```bash

@@ -1,5 +1,6 @@
 # Dependências de desenvolvimento
 -r requirements-api.txt
+-r requirements-parallel.txt
 
 pytest>=8.0,<10.0
 pytest-mock>=3.12,<4.0
