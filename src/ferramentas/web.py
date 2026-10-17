@@ -1,21 +1,30 @@
 """
-Ferramenta de pesquisa web via DuckDuckGo (ou Tavily, quando configurado).
+Ferramenta de pesquisa web via DuckDuckGo, Tavily ou Parallel MCP.
 """
-
-import os
 
 from ddgs import DDGS
 
-_USA_TAVILY = bool(os.environ.get("TAVILY_API_KEY"))
+from src.ferramentas.web_provider import obter_provedor_web
 
 
 def pesquisar_web(query: str, max_resultados: int = 5) -> str:
-    """Pesquisa na web usando Tavily (se disponível) ou DuckDuckGo."""
-    if _USA_TAVILY:
-        from src.ferramentas.web_tavily import pesquisar_web_tavily
-        return pesquisar_web_tavily(query, max_resultados)
-
+    """Pesquisa usando a seleção compartilhada dos pipelines simples e profundo."""
     try:
+        provedor = obter_provedor_web()
+        if provedor == "none":
+            return "Pesquisa web desativada."
+        if provedor == "tavily":
+            from src.ferramentas.web_tavily import pesquisar_web_tavily
+            return pesquisar_web_tavily(query, max_resultados)
+        if provedor == "parallel":
+            from src.ferramentas.web_parallel import buscar_documentos_parallel
+            documentos = buscar_documentos_parallel(query, max_resultados)
+            if not documentos:
+                return "Nenhum resultado encontrado."
+            return f"Resultados para: '{query}'\n\n" + "\n\n".join(
+                f"{i}. {d['titulo']}\n   {d['markdown']}\n   Fonte: {d['url']}"
+                for i, d in enumerate(documentos, 1)
+            )
         with DDGS() as ddgs:
             resultados = list(ddgs.text(query, max_results=max_resultados))
 
